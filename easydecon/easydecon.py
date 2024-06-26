@@ -12,8 +12,6 @@ def group_gene_expression(sdata, genes,group, bin_size=8,quantile=0.70):
     table = sdata.tables[table_key]
     filtered_genes = list(set(genes).intersection(table.var_names))
     gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(group)
-    #gene_expression = gene_expression.sum(axis=1).to_frame(group)
-    #gene_expression['id'] = gene_expression.index
     if group in table.obs.columns:
         table.obs.drop(columns=[group], inplace=True)
     
@@ -21,8 +19,6 @@ def group_gene_expression(sdata, genes,group, bin_size=8,quantile=0.70):
     gene_expression[group] = np.where(gene_expression[group].values >= threshold.values, gene_expression[group], 0)
 
     table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
-    
-    
     return gene_expression
 
 def read_cluster_markers(filename,sdata,exclude_clusters=[],bin_size=8,top_n_genes=60): #100
@@ -42,8 +38,6 @@ def function_identify_cluster(sdata,cluster_membership_df,group,bin_size=8):
     table = sdata.tables[f"square_00{bin_size}um"]
     associated_cluster=dict()
     spots_with_expression = table.obs[table.obs[group] != 0].index
-
-
     
     for spot in spots_with_expression:
         a=dict()
@@ -76,28 +70,23 @@ def visualize_cluster_expression(sdata,cluster_membership_df,group,bin_size=8):
     table = sdata.tables[f"square_00{bin_size}um"]
     spots_with_expression = table.obs[table.obs[group] != 0].index
     
+    # Preallocate DataFrame with zeros
+    all_spots = table.obs.index
+    all_clusters = cluster_membership_df.index.unique()
+    df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
+    
+    # Process only spots with expression
     for spot in spots_with_expression:
-        a=dict()
-
-        for cluster in cluster_membership_df.index.unique():
-            #genes=cluster_membership_df.loc[cluster]["names"].values
-            genes=cluster_membership_df.loc[cluster]["names"]
-            if isinstance(genes, str):
-                genes = [genes]
-            else:
-                genes = genes.values
+        a = {}
+        for cluster in all_clusters:
+            genes = cluster_membership_df.loc[cluster]["names"]
+            genes = [genes] if isinstance(genes, str) else genes.values
             group_expression = table[spot, genes].to_df().mean(axis=1).values
-            a[cluster]=group_expression
-
-        tmp=pd.DataFrame.from_dict(a, orient='index').transpose()
-        tmp.index=[spot]
-        if 'df' in locals():
-            df=pd.concat([df,tmp])
-        else:
-            df=tmp
-    for spot in set(table.obs.index) - set(spots_with_expression):
-        df=pd.concat([df,pd.DataFrame(index=[spot],columns=df.columns)])
-    df.fillna(0,inplace=True) #fill NaNs with 0 otherwise it will be ignored by render_shapes method
+            a[cluster] = group_expression
+        
+        # Directly assign to preallocated DataFrame
+        df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
+    
     return df
 
     
