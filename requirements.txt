@@ -1,0 +1,11 @@
+scipy
+regex
+matplotlib
+pandas
+numpy
+stardist
+spatialdata
+spatialdata-io
+spatialdata-plot
+
+
