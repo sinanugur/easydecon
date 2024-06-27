@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import spatialdata as sp
 import spatialdata_io
+from scipy.stats import spearmanr
+from scipy.spatial.distance import cosine
 
 
 def group_gene_expression(sdata, genes,group, bin_size=8,quantile=0.70):
@@ -64,6 +66,9 @@ def function_identify_cluster(sdata,cluster_membership_df,group,bin_size=8):
     df.set_index('Index', inplace=True)
     df[f'{group}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=cluster_membership_df.index.unique())
     df.drop(columns=['assigned_cluster'],inplace=True)
+
+    table.obs.drop(columns=[f'{group}_clusters'],inplace=True,errors='ignore')
+    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
 def visualize_cluster_expression(sdata,cluster_membership_df,group,bin_size=8):
@@ -87,6 +92,8 @@ def visualize_cluster_expression(sdata,cluster_membership_df,group,bin_size=8):
         # Directly assign to preallocated DataFrame
         df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
     
+    table.obs.drop(columns=[all_clusters],inplace=True,errors='ignore')
+    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
     
