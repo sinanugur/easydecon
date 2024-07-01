@@ -46,7 +46,7 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bi
     df.set_index(celltype,inplace=True)
     return df
 
-def function_identify_clusters(sdata,cluster_membership_df,group,bin_size=8):
+def function_identify_clusters(sdata,cluster_membership_df,common_group_name,bin_size=8):
     table = sdata.tables[f"square_00{bin_size}um"]
     associated_cluster=dict()
     spots_with_expression = table.obs[table.obs[group] != 0].index
@@ -74,10 +74,10 @@ def function_identify_clusters(sdata,cluster_membership_df,group,bin_size=8):
         
     df=pd.DataFrame(list(associated_cluster.items()), columns=['Index', 'assigned_cluster'])
     df.set_index('Index', inplace=True)
-    df[f'{group}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=cluster_membership_df.index.unique())
+    df[f'{common_group_name}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=cluster_membership_df.index.unique())
     df.drop(columns=['assigned_cluster'],inplace=True)
 
-    table.obs.drop(columns=[f'{group}_clusters'],inplace=True,errors='ignore')
+    table.obs.drop(columns=[f'{common_group_name}_clusters'],inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
