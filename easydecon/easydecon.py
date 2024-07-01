@@ -7,36 +7,46 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 
 
-def group_gene_expression(sdata, genes,group, bin_size=8,quantile=0.70):
-    #available_genes = sdata.tables[f"square_00{bin_size}um"].var_names
-    #filtered_genes = [gene for gene in genes if gene in available_genes]
+def common_markers_gene_expression(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
     table_key = f"square_00{bin_size}um"
     table = sdata.tables[table_key]
-    filtered_genes = list(set(genes).intersection(table.var_names))
-    gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(group)
-    if group in table.obs.columns:
-        table.obs.drop(columns=[group], inplace=True)
+    filtered_genes = list(set(marker_genes).intersection(table.var_names))
+    gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
+    if common_group_name in table.obs.columns:
+        table.obs.drop(columns=[common_group_name], inplace=True)
     
-    threshold=gene_expression[gene_expression[group] !=0].quantile(quantile)
-    gene_expression[group] = np.where(gene_expression[group].values >= threshold.values, gene_expression[group], 0)
+    threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
+    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold.values, gene_expression[common_group_name], 0)
 
     table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
     return gene_expression
 
-def read_cluster_markers(filename,sdata,exclude_clusters=[],bin_size=8,top_n_genes=60): #100
-    
-    try:
-        df=pd.read_csv(filename,dtype={"names":str,"group":str})
-    except:
-        df=pd.read_excel(filename,dtype={"names":str,"group":str})
-    df=df[df["names"].isin(sdata.tables[f"square_00{bin_size}um"].var_names)]
-    df=df[~df['group'].isin(exclude_clusters)]
-    df = df.sort_values(by='scores', ascending=False)
-    df = df.groupby('group').head(top_n_genes)
-    df.set_index("group",inplace=True)
+def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",gene_id_column="names",celltype="group",key='rank_genes_groups'): #100
+    table = sdata.tables[f"square_00{bin_size}um"]
+
+    if adata is None:
+        if filename is None:
+            raise ValueError("Please provide a filename or an adata object")
+        else:
+            try:
+                df=pd.read_csv(filename,dtype={gene_id_column:str,celltype:str})
+            except:
+                df=pd.read_excel(filename,dtype={gene_id_column:str,celltype:str})
+    else:
+        try:
+            df=sc.get.rank_genes_groups_df(adata,group=None, key=key, pval_cutoff=0.05, log2fc_min=0.25)
+        except:
+            raise ValueError("Please provide a valid adata object with rank_genes_groups key")
+            
+        
+    df=df[df[gene_id_column].isin(table.var_names)]
+    df=df[~df[celltype].isin(exclude_celltype)]
+    df = df.sort_values(by=sort_by_column, ascending=False)
+    df = df.groupby(celltype).head(top_n_genes)
+    df.set_index(celltype,inplace=True)
     return df
 
-def function_identify_cluster(sdata,cluster_membership_df,group,bin_size=8):
+def function_identify_clusters(sdata,cluster_membership_df,group,bin_size=8):
     table = sdata.tables[f"square_00{bin_size}um"]
     associated_cluster=dict()
     spots_with_expression = table.obs[table.obs[group] != 0].index
