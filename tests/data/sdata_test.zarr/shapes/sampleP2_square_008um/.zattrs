@@ -1,0 +1,120 @@
+{
+    "axes": null,
+    "coordinateTransformations": [
+        {
+            "input": {
+                "axes": [
+                    {
+                        "name": "x",
+                        "type": "space",
+                        "unit": "unit"
+                    },
+                    {
+                        "name": "y",
+                        "type": "space",
+                        "unit": "unit"
+                    }
+                ],
+                "name": "xy"
+            },
+            "output": {
+                "axes": [
+                    {
+                        "name": "x",
+                        "type": "space",
+                        "unit": "unit"
+                    },
+                    {
+                        "name": "y",
+                        "type": "space",
+                        "unit": "unit"
+                    }
+                ],
+                "name": "global"
+            },
+            "type": "identity"
+        },
+        {
+            "input": {
+                "axes": [
+                    {
+                        "name": "x",
+                        "type": "space",
+                        "unit": "unit"
+                    },
+                    {
+                        "name": "y",
+                        "type": "space",
+                        "unit": "unit"
+                    }
+                ],
+                "name": "xy"
+            },
+            "output": {
+                "axes": [
+                    {
+                        "name": "x",
+                        "type": "space",
+                        "unit": "unit"
+                    },
+                    {
+                        "name": "y",
+                        "type": "space",
+                        "unit": "unit"
+                    }
+                ],
+                "name": "downscaled_hires"
+            },
+            "scale": [
+                0.07973422,
+                0.07973422
+            ],
+            "type": "scale"
+        },
+        {
+            "input": {
+                "axes": [
+                    {
+                        "name": "x",
+                        "type": "space",
+                        "unit": "unit"
+                    },
+                    {
+                        "name": "y",
+                        "type": "space",
+                        "unit": "unit"
+                    }
+                ],
+                "name": "xy"
+            },
+            "output": {
+                "axes": [
+                    {
+                        "name": "x",
+                        "type": "space",
+                        "unit": "unit"
+                    },
+                    {
+                        "name": "y",
+                        "type": "space",
+                        "unit": "unit"
+                    }
+                ],
+                "name": "downscaled_lowres"
+            },
+            "scale": [
+                0.007973422,
+                0.007973422
+            ],
+            "type": "scale"
+        }
+    ],
+    "encoding-type": "ngff:shapes",
+    "spatialdata_attrs": {
+        "geos": {
+            "name": "POINT",
+            "type": 0
+        },
+        "version": "0.1"
+    }
+}

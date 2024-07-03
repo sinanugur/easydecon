@@ -7,7 +7,7 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 
 
-def common_markers_gene_expression(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
+def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
     table_key = f"square_00{bin_size}um"
     table = sdata.tables[table_key]
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
@@ -19,9 +19,11 @@ def common_markers_gene_expression(sdata, marker_genes,common_group_name, bin_si
     gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold.values, gene_expression[common_group_name], 0)
 
     table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
+
+    gene_expression.index.name = "Index"
     return gene_expression
 
-def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",gene_id_column="names",celltype="group",key='rank_genes_groups'): #100
+def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",gene_id_column="names",celltype="group",key="rank_genes_groups"): #100
     table = sdata.tables[f"square_00{bin_size}um"]
 
     if adata is None:
@@ -46,17 +48,17 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bi
     df.set_index(celltype,inplace=True)
     return df
 
-def function_identify_clusters(sdata,cluster_membership_df,common_group_name,bin_size=8):
+def identify_clusters_by_expression(sdata,markers_df,common_group_name,bin_size=8,gene_id_column="names"):
     table = sdata.tables[f"square_00{bin_size}um"]
     associated_cluster=dict()
-    spots_with_expression = table.obs[table.obs[group] != 0].index
+    spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     
     for spot in spots_with_expression:
         a=dict()
 
-        for cluster in cluster_membership_df.index.unique():
+        for cluster in markers_df.index.unique():
             #genes=cluster_membership_df.loc[cluster]["names"].values
-            genes=cluster_membership_df.loc[cluster]["names"]
+            genes=markers_df.loc[cluster][gene_id_column]
             if isinstance(genes, str):
                 genes = [genes]
             else:
@@ -74,27 +76,27 @@ def function_identify_clusters(sdata,cluster_membership_df,common_group_name,bin
         
     df=pd.DataFrame(list(associated_cluster.items()), columns=['Index', 'assigned_cluster'])
     df.set_index('Index', inplace=True)
-    df[f'{common_group_name}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=cluster_membership_df.index.unique())
+    df[f'{common_group_name}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
     df.drop(columns=['assigned_cluster'],inplace=True)
 
     table.obs.drop(columns=[f'{common_group_name}_clusters'],inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
-def visualize_cluster_expression(sdata,cluster_membership_df,group,bin_size=8):
+def get_clusters_expression(sdata,markers_df,common_group_name,bin_size=8,gene_id_column="names"):
     table = sdata.tables[f"square_00{bin_size}um"]
-    spots_with_expression = table.obs[table.obs[group] != 0].index
+    spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     
     # Preallocate DataFrame with zeros
     all_spots = table.obs.index
-    all_clusters = cluster_membership_df.index.unique()
+    all_clusters = markers_df.index.unique()
     df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
     
     # Process only spots with expression
     for spot in spots_with_expression:
         a = {}
         for cluster in all_clusters:
-            genes = cluster_membership_df.loc[cluster]["names"]
+            genes = markers_df.loc[cluster][gene_id_column]
             genes = [genes] if isinstance(genes, str) else genes.values
             group_expression = table[spot, genes].to_df().mean(axis=1).values
             a[cluster] = group_expression
@@ -102,47 +104,38 @@ def visualize_cluster_expression(sdata,cluster_membership_df,group,bin_size=8):
         # Directly assign to preallocated DataFrame
         df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
     
-    table.obs.drop(columns=[all_clusters],inplace=True,errors='ignore')
+    table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
     
 
-def function_identify_cluster_corr(sdata,cluster_membership_df,group,bin_size=8):
+def identify_clusters_by_similarity(sdata,markers_df,common_group_name,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation"):
     table = sdata.tables[f"square_00{bin_size}um"]
-    spots_with_expression = table.obs[table.obs[group] != 0].index
+    spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
 
-    result_df = table[spots_with_expression,].to_df().apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, cluster_membership_df)}), axis=1)
-   
-
+    if method=="correlation":
+        print("Correlation")
+        result_df = table[spots_with_expression,].to_df().apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+    elif method=="cosine":
+        print("Cosine")
+        result_df = table[spots_with_expression,].to_df().apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+    else:    
+        raise ValueError("Please provide a valid method: correlation or cosine")
     others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
-
     df=pd.concat([result_df,others_df])
     df.set_index('Index', inplace=True)
-    df[f'{group}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=cluster_membership_df.index.unique())
+    df[f'{common_group_name}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
     df.drop(columns=['assigned_cluster'],inplace=True)
+    table.obs.drop(columns=[f'{common_group_name}_clusters'],inplace=True,errors='ignore')
+    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
-def function_identify_cluster_cosine(sdata,cluster_membership_df,group,bin_size=8):
 
-    table = sdata.tables[f"square_00{bin_size}um"]
-    spots_with_expression = table.obs[table.obs[group] != 0].index
-
-    result_df = table[spots_with_expression,].to_df().apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, cluster_membership_df)}), axis=1)
-   
-
-    others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
-
-    df=pd.concat([result_df,others_df])
-    df.set_index('Index', inplace=True)
-    df[f'{group}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=cluster_membership_df.index.unique())
-    df.drop(columns=['assigned_cluster'],inplace=True)
-    return df
-
-def function_row_corr(row,markers_df):
+def function_row_corr(row,markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
     a={}
     for c in markers_df.index.unique():
-        vector_series=pd.Series(markers_df[["names","logfoldchanges"]].loc[c]["logfoldchanges"].values, index=markers_df[["names","logfoldchanges"]].loc[c]["names"].values)
+        vector_series=pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column,similarity_by_column]].loc[c][gene_id_column].values)
         vector_series=vector_series.reindex(row.index,fill_value=np.nan)
 
         a[c]=spearmanr(row, vector_series,nan_policy="omit",axis=1)[0]
@@ -150,10 +143,10 @@ def function_row_corr(row,markers_df):
     
     return str(max(a, key=a.get))
 
-def function_row_cosine(row, markers_df):
+def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
     a = {}
     for c in markers_df.index.unique():
-        vector_series = pd.Series(markers_df[["names", "logfoldchanges"]].loc[c]["logfoldchanges"].values, index=markers_df[["names", "logfoldchanges"]].loc[c]["names"].values)
+        vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
 
         # Calculate cosine distance and handle cases where vectors might be all NaNs after reindexing

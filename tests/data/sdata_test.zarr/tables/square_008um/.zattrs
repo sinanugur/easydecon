@@ -1,0 +1,11 @@
+{
+    "encoding-type": "anndata",
+    "encoding-version": "0.1.0",
+    "instance_key": "location_id",
+    "region": [
+        "sampleP2_square_008um"
+    ],
+    "region_key": "region",
+    "spatialdata-encoding-type": "ngff:regions_table",
+    "version": "0.1"
+}

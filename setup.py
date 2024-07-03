@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages, Command
 import os
 
-with open("requirements.txt") as req:
-    requirements=req.readlines()
+#with open("requirements.txt") as req:
+#    requirements=req.readlines()
 
 class CleanCommand(Command):
     """Custom clean command to tidy up the project root."""
@@ -20,12 +20,12 @@ with open("README.md","r") as readme:
 
 setup(
     name="easydecon",
-    version="0.1.0",
+    version="0.1.0a",
     packages=find_packages(exclude=('tests*','testing*')),
     long_description=long_description,
     long_description_content_type="text/markdown",
     #extras_require={"dev":["pytest>=3.7"]},
-    install_requires=requirements,
+    #install_requires=requirements,
     include_package_data=True,
     zip_safe=False,
     #entry_points={
@@ -38,7 +38,7 @@ setup(
     author="Sinan U. Umu",
     author_email="sinanugur@gmail.com",
     description="easydecon",
-    keywords="scRNA single-cell spatial transcriptomics deconvolution",
+    keywords="scRNA single-cell high definition spatial transcriptomics deconvolution",
         cmdclass={
         'clean': CleanCommand,
     },
