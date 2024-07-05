@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages, Command
 import os
 
-#with open("requirements.txt") as req:
-#    requirements=req.readlines()
+with open("requirements.txt") as req:
+    requirements=req.readlines()
 
 class CleanCommand(Command):
     """Custom clean command to tidy up the project root."""
@@ -25,7 +25,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     #extras_require={"dev":["pytest>=3.7"]},
-    #install_requires=requirements,
+    install_requires=requirements,
     include_package_data=True,
     zip_safe=False,
     #entry_points={

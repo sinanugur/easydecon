@@ -83,9 +83,13 @@ def identify_clusters_by_expression(sdata,markers_df,common_group_name,bin_size=
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
-def get_clusters_expression(sdata,markers_df,common_group_name,bin_size=8,gene_id_column="names"):
+def get_clusters_average_expression_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names"):
     table = sdata.tables[f"square_00{bin_size}um"]
-    spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    if common_group_name in table.obs.columns:
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        print("No common_group_name column found in the table, processing all spots.")
+        spots_with_expression = table.obs.index
     
     # Preallocate DataFrame with zeros
     all_spots = table.obs.index
