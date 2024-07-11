@@ -48,11 +48,22 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bi
     df.set_index(celltype,inplace=True)
     return df
 
-def identify_clusters_by_expression(sdata,markers_df,common_group_name,bin_size=8,gene_id_column="names"):
+def identify_clusters_by_expression(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",results_column="easydecon",method="mean"):
     table = sdata.tables[f"square_00{bin_size}um"]
     associated_cluster=dict()
-    spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    
+    if common_group_name in table.obs.columns:
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        print("common_group_name column not found in the table, processing all spots.")
+        spots_with_expression = table.obs.index
+
+    if method=="mean":
+        compute = lambda x: np.mean(x, axis=1).values
+    elif method=="median":
+        compute = lambda x: np.median(x, axis=1).values
+    elif method=="sum":
+        compute = lambda x: np.sum(x, axis=1).values
+
     for spot in spots_with_expression:
         a=dict()
 
@@ -65,7 +76,8 @@ def identify_clusters_by_expression(sdata,markers_df,common_group_name,bin_size=
                 genes = genes.values
             #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().sum(axis=1).values
             #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().apply(gmean,axis=1).values
-            group_expression = table[spot, genes].to_df().mean(axis=1).values
+            #group_expression = table[spot, genes].to_df().mean(axis=1).values
+            group_expression = compute(table[spot, genes].to_df())
             a[cluster]=group_expression
         #max_cluster=str(max(a, key=a.get))
 
@@ -76,21 +88,29 @@ def identify_clusters_by_expression(sdata,markers_df,common_group_name,bin_size=
         
     df=pd.DataFrame(list(associated_cluster.items()), columns=['Index', 'assigned_cluster'])
     df.set_index('Index', inplace=True)
-    df[f'{common_group_name}_clusters'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
+    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
     df.drop(columns=['assigned_cluster'],inplace=True)
 
-    table.obs.drop(columns=[f'{common_group_name}_clusters'],inplace=True,errors='ignore')
+    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
 
-def get_clusters_average_expression_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names"):
+
+def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",method="mean"):
     table = sdata.tables[f"square_00{bin_size}um"]
     if common_group_name in table.obs.columns:
         spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     else:
-        print("No common_group_name column found in the table, processing all spots.")
+        print("common_group_name column not found in the table, processing all spots.")
         spots_with_expression = table.obs.index
-    
+
+    if method=="mean":
+        compute = lambda x: np.mean(x, axis=1).values
+    elif method=="median":
+        compute = lambda x: np.median(x, axis=1).values
+    elif method=="sum":
+        compute = lambda x: np.sum(x, axis=1).values
+
     # Preallocate DataFrame with zeros
     all_spots = table.obs.index
     all_clusters = markers_df.index.unique()
@@ -102,7 +122,7 @@ def get_clusters_average_expression_on_tissue(sdata,markers_df,common_group_name
         for cluster in all_clusters:
             genes = markers_df.loc[cluster][gene_id_column]
             genes = [genes] if isinstance(genes, str) else genes.values
-            group_expression = table[spot, genes].to_df().mean(axis=1).values
+            group_expression = compute(table[spot, genes].to_df())
             a[cluster] = group_expression
         
         # Directly assign to preallocated DataFrame
