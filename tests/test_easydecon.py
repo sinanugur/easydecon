@@ -52,7 +52,7 @@ def test_identify_clusters_by_expression(sdata,macrophage_markers,common_group_n
     assert (df_identify.index.sort_values() == df_clusters.index.sort_values()).all()
     assert (df_identify["Macrophage_clusters"].value_counts().values == df_clusters["Macrophage_clusters"].value_counts().values).all()
 
-def test_get_clusters_expression_on_tissue(sdata,macrophage_markers,common_group_name,bin_size,quantile):
+def test_get_clusters_expression_on_tissue(sdata,common_group_name,bin_size,quantile):
     #common_markers_gene_expression_and_filter(sdata, macrophage_markers, common_group_name, bin_size, quantile)
     markers_df=read_markers_dataframe(sdata,"tests/data/test_macro_deg.xlsx",exclude_celltype=["11","12"],top_n_genes=60)
     df=pd.read_csv("tests/data/test_macrophage_clusters_expression.csv",index_col=0)
@@ -60,4 +60,17 @@ def test_get_clusters_expression_on_tissue(sdata,macrophage_markers,common_group
     assert (df.index.sort_values() == cluster_expression.index.sort_values()).all()
     assert np.isclose(df.sort_index()["0"],cluster_expression.sort_index()["0"],atol=1e-5).all()
 
+def test_identify_clusters_by_similarity(sdata,macrophage_markers,common_group_name, bin_size, quantile):
+    gene_expression = common_markers_gene_expression_and_filter(sdata, macrophage_markers, common_group_name, bin_size, quantile)
+    markers_df=read_markers_dataframe(sdata,"tests/data/test_macro_deg.xlsx",exclude_celltype=["11","12"],top_n_genes=60)
 
+    df_corr=identify_clusters_by_similarity(sdata=sdata,markers_df=markers_df,common_group_name=common_group_name,method="correlation",results_column="Macrophage_clusters_correlation")
+    df_cos=identify_clusters_by_similarity(sdata=sdata,markers_df=markers_df,common_group_name=common_group_name,method="cosine",results_column="Macrophage_clusters_cosine")
+    df_corr_testing=pd.read_csv("tests/data/test_macrophage_clusters_correlation.csv",index_col=0)
+    df_cos_testing=pd.read_csv("tests/data/test_macrophage_clusters_cosine.csv",index_col=0,dtype={'Macrophage_clusters_cosine':'str'})
+
+    df_cos_testing['Macrophage_clusters_cosine'] = pd.Categorical(df_cos_testing['Macrophage_clusters_cosine'], categories=df_cos["Macrophage_clusters_cosine"].cat.categories)
+
+    assert (df_corr["Macrophage_clusters_correlation"].value_counts().values == df_corr_testing["Macrophage_clusters_correlation"].value_counts().values).all()
+    assert (df_cos["Macrophage_clusters_cosine"].value_counts().values == df_cos_testing["Macrophage_clusters_cosine"].value_counts().values).all()
+    #assert (df_cos.sort_index()["Macrophage_clusters_cosine"] == df_cos_testing.sort_index()["Macrophage_clusters_cosine"]).all()
