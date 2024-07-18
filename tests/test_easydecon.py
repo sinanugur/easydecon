@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 @pytest.fixture
-def sdata(scope="module"):
+def sdata(scope="session"):
     # Create a mock spatialdata object for testing
     # Replace this with your own implementation or use a library like unittest.mock
     sdata_small=sd.read_zarr("tests/data/sdata_test.zarr")
@@ -73,4 +73,4 @@ def test_identify_clusters_by_similarity(sdata,macrophage_markers,common_group_n
 
     assert (df_corr["Macrophage_clusters_correlation"].value_counts().values == df_corr_testing["Macrophage_clusters_correlation"].value_counts().values).all()
     assert (df_cos["Macrophage_clusters_cosine"].value_counts().values == df_cos_testing["Macrophage_clusters_cosine"].value_counts().values).all()
-    #assert (df_cos.sort_index()["Macrophage_clusters_cosine"] == df_cos_testing.sort_index()["Macrophage_clusters_cosine"]).all()
+
