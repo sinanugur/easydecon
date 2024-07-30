@@ -9,6 +9,8 @@ from numba import jit
 from tqdm import tqdm
 
 
+#when NAN values are present in the data, spatialdata may not produce output, so we need to replace NAN values with 0
+
 def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
     table_key = f"square_00{bin_size}um"
     table = sdata.tables[table_key]
@@ -25,6 +27,9 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     gene_expression.index.name = "Index"
     return gene_expression
 
+
+
+#this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
 def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups"): #100
     table = sdata.tables[f"square_00{bin_size}um"]
 
@@ -137,9 +142,11 @@ def identify_clusters_by_expression(sdata,markers_df,common_group_name=None,bin_
     return df
 
 
-
-
-    
+def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon"):
+    table = sdata.tables[f"square_00{bin_size}um"]
+    table.obs.drop(columns=[results_column],inplace=True,errors='ignore')
+    table.obs=pd.merge(table.obs, df.idxmax(axis=1), left_index=True, right_index=True)
+    return
 
 
 def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=1):
@@ -192,11 +199,12 @@ def identify_clusters_by_similarity(sdata,markers_df,common_group_name=None,bin_
 
     if method=="correlation":
         print("Method: Correlation")
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
         result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
     elif method=="cosine":
         print("Method: Cosine")
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
         result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-    
     else:    
         raise ValueError("Please provide a valid method: correlation or cosine")
     others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
@@ -212,9 +220,11 @@ def identify_clusters_by_similarity(sdata,markers_df,common_group_name=None,bin_
 def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges"):
     a = {}
     markers_df_grouped = markers_df.groupby(markers_df.index)
-    
+    row=min_max_scale(row)
+
     for c, group in markers_df_grouped:
         vector_series = group.set_index(gene_id_column)[similarity_by_column].reindex(row.index, fill_value=np.nan)
+        vector_series = min_max_scale(vector_series)
         a[c] = spearmanr(row, vector_series, nan_policy="omit")[0]
     
     #return str(max(a, key=a.get))
@@ -224,19 +234,41 @@ def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_col
 #@jit(nopython=True)
 def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
     a = {}
+    row=min_max_scale(row)
     for c in markers_df.index.unique():
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
+        l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
+        vector_series = min_max_scale(vector_series)
 
         # Calculate cosine distance and handle cases where vectors might be all NaNs after reindexing
-        if not vector_series.isnull().all() and not row.isnull().all():
-            a[c] = 1-cosine(row.fillna(0), vector_series.fillna(0))
+        #if not vector_series.isnull().all() and not row.isnull().all():
+        #    a[c] = 1-cosine(row.fillna(0), vector_series.fillna(0))
+        #else:
+        #    a[c] = np.nan  # Assign NaN if either vector is all NaNs
+
+        valid_mask = ~vector_series.isna() & ~row.isna()
+        #t = valid_mask.sum()
+
+        
+        t = (row[valid_mask] != 0).sum()
+        
+        if t == 0:  # No valid pairs
+
+            a[c] = 0.0
         else:
-            a[c] = np.nan  # Assign NaN if either vector is all NaNs
-
-
+            #a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
+            print(t)
+            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))
     return a
 
+
+def min_max_scale(series):
+    min_val = series.min()
+    max_val = series.max()
+    if min_val == max_val:
+        return series.apply(lambda x: 0.0)  # what if all values are the same? for now, return 0
+    return (series - min_val) / (max_val - min_val)
 
 def function_row_jaccard(row, markers_df, gene_id_column="names", threshold=1):
     a = {}
@@ -258,13 +290,13 @@ def function_row_jaccard(row, markers_df, gene_id_column="names", threshold=1):
     
     return a
 
-def function_row_weighted_jaccard(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges", threshold=1):
+def function_row_weighted_jaccard(row, markers_df, gene_id_column="names", threshold=1):
     a = {}
     
     row=row[row > threshold]
     for c in markers_df.index.unique():
         row_set = set(row[row > threshold].sort_values(ascending=False).index)
-        vector_set = set(markers_df[[gene_id_column,similarity_by_column]].loc[c][gene_id_column].values)
+        vector_set = set(markers_df.loc[c][gene_id_column].values)
         
         # Calculate intersection and union
         #intersection = len(row_set.intersection(vector_set))
