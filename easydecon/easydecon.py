@@ -170,7 +170,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
         result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
     elif method=="wjaccard":
         print("Method: Weighted Jaccard")
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column,threshold=threshold)}), axis=1)
+        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
     else:    
         raise ValueError("Please provide a valid method: correlation or cosine")
     result_df=result_df["assigned_cluster"].apply(pd.Series)
@@ -186,37 +186,6 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     return df
 
 
-
-def identify_clusters_by_similarity(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",results_column="easydecon_similarity",method="correlation"):
-    table = sdata.tables[f"square_00{bin_size}um"]
-    tqdm.pandas()
-
-    if common_group_name in table.obs.columns:
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if method=="correlation":
-        print("Method: Correlation")
-        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-    elif method=="cosine":
-        print("Method: Cosine")
-        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-    else:    
-        raise ValueError("Please provide a valid method: correlation or cosine")
-    others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
-    df=pd.concat([result_df,others_df])
-    df.set_index('Index', inplace=True)
-    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
-    df.drop(columns=['assigned_cluster'],inplace=True)
-    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    return df
-
-
 def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges"):
     a = {}
     markers_df_grouped = markers_df.groupby(markers_df.index)
@@ -225,7 +194,8 @@ def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_col
     for c, group in markers_df_grouped:
         vector_series = group.set_index(gene_id_column)[similarity_by_column].reindex(row.index, fill_value=np.nan)
         vector_series = min_max_scale(vector_series)
-        a[c] = spearmanr(row, vector_series, nan_policy="omit")[0]
+        sp = spearmanr(row, vector_series, nan_policy="omit")[0]
+        a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
     
     #return str(max(a, key=a.get))
     return a
@@ -257,9 +227,9 @@ def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_col
 
             a[c] = 0.0
         else:
-            #a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
-            print(t)
-            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))
+            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
+            #print(t)
+            #a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))
     return a
 
 
@@ -274,7 +244,7 @@ def function_row_jaccard(row, markers_df, gene_id_column="names", threshold=1):
     a = {}
     
     for c in markers_df.index.unique():
-        row_set = set(row[row >= threshold].sort_values(ascending=False).index)
+        row_set = set(row[row > threshold].sort_values(ascending=False).index)
         vector_set = set(markers_df.loc[c][gene_id_column].values)
         
         # Calculate intersection and union
@@ -331,6 +301,37 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
     return
 
 def test_function():
-    print("Hello World Now")
+    print("Easydecon loaded!")
 
 
+"""
+def identify_clusters_by_similarity(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",results_column="easydecon_similarity",method="correlation"):
+    table = sdata.tables[f"square_00{bin_size}um"]
+    tqdm.pandas()
+
+    if common_group_name in table.obs.columns:
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        print("common_group_name column not found in the table, processing all spots.")
+        spots_with_expression = table.obs.index
+
+    if method=="correlation":
+        print("Method: Correlation")
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+    elif method=="cosine":
+        print("Method: Cosine")
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+    else:    
+        raise ValueError("Please provide a valid method: correlation or cosine")
+    others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
+    df=pd.concat([result_df,others_df])
+    df.set_index('Index', inplace=True)
+    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
+    df.drop(columns=['assigned_cluster'],inplace=True)
+    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
+    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
+    return df
+
+"""
