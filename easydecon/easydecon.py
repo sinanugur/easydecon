@@ -161,7 +161,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
 
     if method=="correlation":
         print("Method: Correlation")
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_spearman(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
     elif method=="cosine":
         print("Method: Cosine")
         result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
@@ -200,6 +200,22 @@ def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_col
     #return str(max(a, key=a.get))
     return a
 
+def function_row_spearman(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
+    a = {}
+    for c in markers_df.index.unique():
+        vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
+        l = len(vector_series)
+        vector_series = vector_series.reindex(row.index, fill_value=np.nan)
+        valid_mask = ~vector_series.isna() & ~row.isna()
+        t = (row[valid_mask] != 0).sum()
+        if t == 0:  # No valid pairs
+            a[c] = 0.0
+        else:
+            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*(t/l)
+            a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
+    return a
+
+
 
 #@jit(nopython=True)
 def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
@@ -210,26 +226,12 @@ def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_col
         l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
         vector_series = min_max_scale(vector_series)
-
-        # Calculate cosine distance and handle cases where vectors might be all NaNs after reindexing
-        #if not vector_series.isnull().all() and not row.isnull().all():
-        #    a[c] = 1-cosine(row.fillna(0), vector_series.fillna(0))
-        #else:
-        #    a[c] = np.nan  # Assign NaN if either vector is all NaNs
-
         valid_mask = ~vector_series.isna() & ~row.isna()
-        #t = valid_mask.sum()
-
-        
         t = (row[valid_mask] != 0).sum()
-        
         if t == 0:  # No valid pairs
-
             a[c] = 0.0
         else:
             a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
-            #print(t)
-            #a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))
     return a
 
 
