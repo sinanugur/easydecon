@@ -8,6 +8,13 @@ from scipy.spatial.distance import cosine
 from numba import jit
 from tqdm import tqdm
 
+from joblib import Parallel, delayed
+
+
+# Ensure that the progress_apply method is available
+tqdm.pandas()
+
+
 
 #when NAN values are present in the data, spatialdata may not produce output, so we need to replace NAN values with 0
 
@@ -145,9 +152,15 @@ def identify_clusters_by_expression(sdata,markers_df,common_group_name=None,bin_
 def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon"):
     table = sdata.tables[f"square_00{bin_size}um"]
     table.obs.drop(columns=[results_column],inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df.idxmax(axis=1), left_index=True, right_index=True)
+    table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
     return
 
+
+def process_row(row,func, markers_df, gene_id_column, similarity_by_column,threshold):
+    return pd.Series({
+        'Index': row.name,
+        'assigned_cluster': func(row, markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold)
+    })
 
 def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=1):
     table = sdata.tables[f"square_00{bin_size}um"]
@@ -161,19 +174,29 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
 
     if method=="correlation":
         print("Method: Correlation")
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_spearman(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_spearman(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        func=function_row_spearman
     elif method=="cosine":
         print("Method: Cosine")
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
+        func=function_row_cosine
     elif method=="jaccard":
         print("Method: Jaccard")
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
+        func=function_row_jaccard
     elif method=="wjaccard":
         print("Method: Weighted Jaccard")
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
+        func=function_row_weighted_jaccard
     else:    
         raise ValueError("Please provide a valid method: correlation or cosine")
+    results = Parallel(n_jobs=6,batch_size=1000)(
+    delayed(process_row)(row,func, markers_df, gene_id_column, similarity_by_column,threshold)
+    for index, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
+    result_df = pd.DataFrame(results)
+    result_df.set_index("Index",inplace=True)
     result_df=result_df["assigned_cluster"].apply(pd.Series)
+
     #others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
     others_df = pd.DataFrame(0, index=list(set(table.obs.index) - set(spots_with_expression)), columns=result_df.columns)
     df=pd.concat([result_df,others_df])
@@ -186,7 +209,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     return df
 
 
-def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges"):
+def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges",threshold=1):
     a = {}
     markers_df_grouped = markers_df.groupby(markers_df.index)
     row=min_max_scale(row)
@@ -200,7 +223,7 @@ def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_col
     #return str(max(a, key=a.get))
     return a
 
-def function_row_spearman(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
+def function_row_spearman(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges",threshold=1):
     a = {}
     for c in markers_df.index.unique():
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
@@ -218,7 +241,7 @@ def function_row_spearman(row, markers_df,gene_id_column="names",similarity_by_c
 
 
 #@jit(nopython=True)
-def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges"):
+def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges",threshold=1):
     a = {}
     row=min_max_scale(row)
     for c in markers_df.index.unique():
@@ -242,7 +265,7 @@ def min_max_scale(series):
         return series.apply(lambda x: 0.0)  # what if all values are the same? for now, return 0
     return (series - min_val) / (max_val - min_val)
 
-def function_row_jaccard(row, markers_df, gene_id_column="names", threshold=1):
+def function_row_jaccard(row, markers_df, gene_id_column="names",similarity_by_column="logfoldchanges", threshold=1):
     a = {}
     
     for c in markers_df.index.unique():
@@ -262,7 +285,7 @@ def function_row_jaccard(row, markers_df, gene_id_column="names", threshold=1):
     
     return a
 
-def function_row_weighted_jaccard(row, markers_df, gene_id_column="names", threshold=1):
+def function_row_weighted_jaccard(row, markers_df, gene_id_column="names",similarity_by_column="logfoldchanges" ,threshold=1):
     a = {}
     
     row=row[row > threshold]
