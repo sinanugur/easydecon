@@ -155,6 +155,12 @@ def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon"):
     table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
     return
 
+def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
+    table = sdata.tables[f"square_00{bin_size}um"]
+    table.obs.drop(columns=[temp_column],inplace=True,errors='ignore')
+    #table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
+    table.obs[temp_column]=table.obs[results_column].apply(lambda x: x if x in clusters else np.nan)
+    return
 
 def process_row(row,func, markers_df, gene_id_column, similarity_by_column,threshold):
     return pd.Series({
