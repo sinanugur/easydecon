@@ -7,6 +7,7 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 from numba import jit
 from tqdm import tqdm
+from .config import config
 
 from joblib import Parallel, delayed
 
@@ -27,7 +28,7 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
         table.obs.drop(columns=[common_group_name], inplace=True)
     
     threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
-    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold.values, gene_expression[common_group_name], 0)
+    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
 
     table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
 
@@ -101,58 +102,13 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
     return df
 
 
-def identify_clusters_by_expression(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",results_column="easydecon",method="mean"):
-    table = sdata.tables[f"square_00{bin_size}um"]
-    associated_cluster=dict()
-    if common_group_name in table.obs.columns:
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if method=="mean":
-        compute = lambda x: np.mean(x, axis=1).values
-    elif method=="median":
-        compute = lambda x: np.median(x, axis=1).values
-    elif method=="sum":
-        compute = lambda x: np.sum(x, axis=1).values
-
-    for spot in spots_with_expression:
-        a=dict()
-
-        for cluster in markers_df.index.unique():
-            #genes=cluster_membership_df.loc[cluster]["names"].values
-            genes=markers_df.loc[cluster][gene_id_column]
-            if isinstance(genes, str):
-                genes = [genes]
-            else:
-                genes = genes.values
-            #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().sum(axis=1).values
-            #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().apply(gmean,axis=1).values
-            #group_expression = table[spot, genes].to_df().mean(axis=1).values
-            group_expression = compute(table[spot, genes].to_df())
-            a[cluster]=group_expression
-        #max_cluster=str(max(a, key=a.get))
-
-        associated_cluster[spot]=str(max(a, key=a.get))
-    
-    for spot in set(table.obs.index) - set(spots_with_expression):
-        associated_cluster[spot] = None
-        
-    df=pd.DataFrame(list(associated_cluster.items()), columns=['Index', 'assigned_cluster'])
-    df.set_index('Index', inplace=True)
-    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
-    df.drop(columns=['assigned_cluster'],inplace=True)
-
-    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    return df
 
 
 def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon"):
     table = sdata.tables[f"square_00{bin_size}um"]
     table.obs.drop(columns=[results_column],inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
+    df_reindexed=df[~(df == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+    table.obs=pd.merge(table.obs, df_reindexed, left_index=True, right_index=True)
     return
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
@@ -162,13 +118,14 @@ def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="e
     table.obs[temp_column]=table.obs[results_column].apply(lambda x: x if x in clusters else np.nan)
     return
 
-def process_row(row,func, markers_df, gene_id_column, similarity_by_column,threshold):
+def process_row(row,func, **kwargs):
     return pd.Series({
         'Index': row.name,
-        'assigned_cluster': func(row, markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold)
+        #'assigned_cluster': func(row, markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold)
+        'assigned_cluster': func(row, **kwargs)
     })
 
-def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=1):
+def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0.1):
     table = sdata.tables[f"square_00{bin_size}um"]
     tqdm.pandas()
 
@@ -190,14 +147,18 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
         print("Method: Jaccard")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
         func=function_row_jaccard
+    elif method=="overlap":
+        print("Method: Overlap")
+        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
+        func=function_row_overlap
     elif method=="wjaccard":
         print("Method: Weighted Jaccard")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
         func=function_row_weighted_jaccard
     else:    
-        raise ValueError("Please provide a valid method: correlation or cosine")
-    results = Parallel(n_jobs=6,batch_size=1000)(
-    delayed(process_row)(row,func, markers_df, gene_id_column, similarity_by_column,threshold)
+        raise ValueError("Please provide a valid method: correlation, jaccard, wjaccard or cosine")
+    results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size)(
+    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold)
     for index, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
     result_df = pd.DataFrame(results)
     result_df.set_index("Index",inplace=True)
@@ -215,21 +176,12 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     return df
 
 
-def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges",threshold=1):
-    a = {}
-    markers_df_grouped = markers_df.groupby(markers_df.index)
-    row=min_max_scale(row)
 
-    for c, group in markers_df_grouped:
-        vector_series = group.set_index(gene_id_column)[similarity_by_column].reindex(row.index, fill_value=np.nan)
-        vector_series = min_max_scale(vector_series)
-        sp = spearmanr(row, vector_series, nan_policy="omit")[0]
-        a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
-    
-    #return str(max(a, key=a.get))
-    return a
 
-def function_row_spearman(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges",threshold=1):
+def function_row_spearman(row, markers_df,**kwargs):
+    gene_id_column=kwargs.get("gene_id_column")
+    similarity_by_column=kwargs.get("similarity_by_column")
+
     a = {}
     for c in markers_df.index.unique():
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
@@ -247,7 +199,9 @@ def function_row_spearman(row, markers_df,gene_id_column="names",similarity_by_c
 
 
 #@jit(nopython=True)
-def function_row_cosine(row, markers_df,gene_id_column="names",similarity_by_column="logfoldchanges",threshold=1):
+def function_row_cosine(row, markers_df,**kwargs):
+    gene_id_column=kwargs.get("gene_id_column")
+    similarity_by_column=kwargs.get("similarity_by_column")
     a = {}
     row=min_max_scale(row)
     for c in markers_df.index.unique():
@@ -271,9 +225,10 @@ def min_max_scale(series):
         return series.apply(lambda x: 0.0)  # what if all values are the same? for now, return 0
     return (series - min_val) / (max_val - min_val)
 
-def function_row_jaccard(row, markers_df, gene_id_column="names",similarity_by_column="logfoldchanges", threshold=1):
+def function_row_jaccard(row, markers_df, **kwargs):
     a = {}
-    
+    gene_id_column=kwargs.get("gene_id_column")
+    threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
         row_set = set(row[row > threshold].sort_values(ascending=False).index)
         vector_set = set(markers_df.loc[c][gene_id_column].values)
@@ -291,7 +246,32 @@ def function_row_jaccard(row, markers_df, gene_id_column="names",similarity_by_c
     
     return a
 
-def function_row_weighted_jaccard(row, markers_df, gene_id_column="names",similarity_by_column="logfoldchanges" ,threshold=1):
+def function_row_overlap(row, markers_df, **kwargs):
+    a = {}
+    gene_id_column=kwargs.get("gene_id_column")
+    threshold=kwargs.get("threshold")
+    for c in markers_df.index.unique():
+        row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        vector_set = set(markers_df.loc[c][gene_id_column].values)
+        
+        # Calculate intersection and union
+        intersection = len(row_set.intersection(vector_set))
+        union = min(len(row_set),len(vector_set))
+        
+        if union == 0:
+            overlap_sim = 0.0  # If both sets are empty, define similarity as 0
+        else:
+            overlap_sim = intersection / union
+        
+        a[c] = overlap_sim
+    
+    return a
+
+
+
+def function_row_weighted_jaccard(row, markers_df, **kwargs):
+    gene_id_column=kwargs.get("gene_id_column")
+    threshold=kwargs.get("threshold")
     a = {}
     
     row=row[row > threshold]
@@ -310,8 +290,6 @@ def function_row_weighted_jaccard(row, markers_df, gene_id_column="names",simila
             if gene in row_set and gene in vector_set:
                 intersection += weight
             union += weight
-
-
         if union == 0:
             jaccard_sim = 0.0  # If both sets are empty, define similarity as 0
         else:
@@ -364,5 +342,67 @@ def identify_clusters_by_similarity(sdata,markers_df,common_group_name=None,bin_
     table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
+
+    
+    def identify_clusters_by_expression(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",results_column="easydecon",method="mean"):
+    table = sdata.tables[f"square_00{bin_size}um"]
+    associated_cluster=dict()
+    if common_group_name in table.obs.columns:
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        print("common_group_name column not found in the table, processing all spots.")
+        spots_with_expression = table.obs.index
+
+    if method=="mean":
+        compute = lambda x: np.mean(x, axis=1).values
+    elif method=="median":
+        compute = lambda x: np.median(x, axis=1).values
+    elif method=="sum":
+        compute = lambda x: np.sum(x, axis=1).values
+
+    for spot in spots_with_expression:
+        a=dict()
+
+        for cluster in markers_df.index.unique():
+            #genes=cluster_membership_df.loc[cluster]["names"].values
+            genes=markers_df.loc[cluster][gene_id_column]
+            if isinstance(genes, str):
+                genes = [genes]
+            else:
+                genes = genes.values
+            #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().sum(axis=1).values
+            #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().apply(gmean,axis=1).values
+            #group_expression = table[spot, genes].to_df().mean(axis=1).values
+            group_expression = compute(table[spot, genes].to_df())
+            a[cluster]=group_expression
+        #max_cluster=str(max(a, key=a.get))
+
+        associated_cluster[spot]=str(max(a, key=a.get))
+    
+    for spot in set(table.obs.index) - set(spots_with_expression):
+        associated_cluster[spot] = None
+        
+    df=pd.DataFrame(list(associated_cluster.items()), columns=['Index', 'assigned_cluster'])
+    df.set_index('Index', inplace=True)
+    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
+    df.drop(columns=['assigned_cluster'],inplace=True)
+
+    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
+    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
+    return df
+
+    def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges",threshold=1):
+    a = {}
+    markers_df_grouped = markers_df.groupby(markers_df.index)
+    row=min_max_scale(row)
+
+    for c, group in markers_df_grouped:
+        vector_series = group.set_index(gene_id_column)[similarity_by_column].reindex(row.index, fill_value=np.nan)
+        vector_series = min_max_scale(vector_series)
+        sp = spearmanr(row, vector_series, nan_policy="omit")[0]
+        a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
+    
+    #return str(max(a, key=a.get))
+    return a
 
 """
