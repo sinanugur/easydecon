@@ -20,8 +20,11 @@ tqdm.pandas()
 #when NAN values are present in the data, spatialdata may not produce output, so we need to replace NAN values with 0
 
 def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
-    table_key = f"square_00{bin_size}um"
-    table = sdata.tables[table_key]
+    try:
+        table_key = f"square_00{bin_size}um"
+        table = sdata.tables[table_key]
+    except:
+        table=sdata
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
     gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
     if common_group_name in table.obs.columns:
@@ -67,8 +70,11 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bi
 
 def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",method="mean"):
 
-    
-    table = sdata.tables[f"square_00{bin_size}um"]
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except:
+        table=sdata
+
     markers_df_tmp=markers_df[markers_df[gene_id_column].isin(table.var_names)] #just to be sure the genes are present in the spatial data
 
     if common_group_name in table.obs.columns:
@@ -109,7 +115,11 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
 
 
 def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon"):
-    table = sdata.tables[f"square_00{bin_size}um"]
+    
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except:
+        table=sdata
     table.obs.drop(columns=[results_column],inplace=True,errors='ignore')
     df_reindexed=df[~(df == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
     table.obs=pd.merge(table.obs, df_reindexed, left_index=True, right_index=True)
@@ -130,7 +140,10 @@ def process_row(row,func, **kwargs):
     })
 
 def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0.1):
-    table = sdata.tables[f"square_00{bin_size}um"]
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except:
+        table=sdata
     tqdm.pandas()
 
     if common_group_name in table.obs.columns:
