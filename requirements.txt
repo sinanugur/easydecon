@@ -7,5 +7,5 @@ stardist
 spatialdata
 spatialdata-io
 spatialdata-plot
-
+ipykernel
 
