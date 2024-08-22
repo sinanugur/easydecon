@@ -58,7 +58,7 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bi
             raise ValueError("Please provide a valid adata object with rank_genes_groups key")
             
         
-    df = df[df[gene_id_column].isin(table.var_names)]
+    df = df[df[gene_id_column].isin(table.var_names)] #check if the var_names are present in the spatial data
     df = df[~df[celltype].isin(exclude_celltype)]
     df = df.sort_values(by=sort_by_column, ascending=ascending)
     df = df.groupby(celltype).head(top_n_genes)
