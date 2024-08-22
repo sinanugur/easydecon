@@ -5,7 +5,6 @@ import spatialdata as sp
 import spatialdata_io
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
-from numba import jit
 from tqdm import tqdm
 from .config import config
 

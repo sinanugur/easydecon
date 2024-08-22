@@ -8,4 +8,5 @@ spatialdata
 spatialdata-io
 spatialdata-plot
 ipykernel
-
+squidpy
+joblib
