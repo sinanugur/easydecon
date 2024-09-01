@@ -9,6 +9,7 @@ from tqdm import tqdm
 from .config import config
 
 from joblib import Parallel, delayed
+from scipy.stats import zscore
 
 
 # Ensure that the progress_apply method is available
@@ -113,14 +114,18 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
 
 
 
-def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon"):
+def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon",method="max"):
     
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
         table=sdata
     table.obs.drop(columns=[results_column],inplace=True,errors='ignore')
-    df_reindexed=df[~(df == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+    if method=="max":
+        df_reindexed=df[~(df == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+    elif method=="zmax":
+        tmp=df.replace(0,np.nan).apply(lambda x: zscore(x, nan_policy='omit'),axis=0).idxmax(axis=1)
+        df_reindexed=tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
     table.obs=pd.merge(table.obs, df_reindexed, left_index=True, right_index=True)
     return
 
@@ -130,6 +135,17 @@ def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="e
     #table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
     table.obs[temp_column]=table.obs[results_column].apply(lambda x: x if x in clusters else np.nan)
     return
+
+def plot_assigned_clusters_from_dataframe(sdata,dataframe,sample_id,bin_size=8,title="Assigned Clusters",cmap="tab20",legend_fontsize=8,figsize=(5,5),dpi=200,method="matplotlib",scale=1):
+    assign_clusters_from_df(sdata,df=dataframe,bin_size=8,results_column="plotted_clusters")
+    
+    sdata.pl.render_images("queried_cytassist").pl.render_shapes(
+        f"{sample_id}_square_00{bin_size}um", color="plotted_clusters",cmap=cmap,method=method,scale=scale
+    ).pl.show(coordinate_systems="global", title=title, legend_fontsize=legend_fontsize,figsize=figsize,dpi=dpi)
+
+    return
+
+
 
 def process_row(row,func, **kwargs):
     return pd.Series({
@@ -327,6 +343,8 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
 
 def test_function():
     print("Easydecon loaded!")
+
+
 
 
 """
