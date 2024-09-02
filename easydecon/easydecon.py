@@ -126,6 +126,8 @@ def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon",metho
     elif method=="zmax":
         tmp=df.replace(0,np.nan).apply(lambda x: zscore(x, nan_policy='omit'),axis=0).idxmax(axis=1)
         df_reindexed=tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+    else:
+        raise ValueError("Please provide a valid method: max or zmax")
     table.obs=pd.merge(table.obs, df_reindexed, left_index=True, right_index=True)
     return
 
