@@ -11,6 +11,8 @@ from .config import config
 from joblib import Parallel, delayed
 from scipy.stats import zscore
 
+from spatialdata import polygon_query
+
 
 # Ensure that the progress_apply method is available
 tqdm.pandas()
@@ -114,7 +116,7 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
 
 
 
-def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon",method="max"):
+def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon",method="max",diagnostic=None):
     
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
@@ -129,6 +131,14 @@ def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon",metho
     else:
         raise ValueError("Please provide a valid method: max or zmax")
     table.obs=pd.merge(table.obs, df_reindexed, left_index=True, right_index=True)
+    if diagnostic is not None:
+        for r in table.obs[["easydecon"]].itertuples(index=True, name='Pandas'):
+            if not pd.isna(r.easydecon):
+                table.obs.at[r.Index, "diagnostic"] = list(diagnostic.loc[r.Index][r.easydecon])
+            else:
+                pass
+
+        
     return
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
@@ -145,6 +155,25 @@ def plot_assigned_clusters_from_dataframe(sdata,dataframe,sample_id,bin_size=8,t
         f"{sample_id}_square_00{bin_size}um", color="plotted_clusters",cmap=cmap,method=method,scale=scale
     ).pl.show(coordinate_systems="global", title=title, legend_fontsize=legend_fontsize,figsize=figsize,dpi=dpi)
 
+    return
+
+
+def napari_region_assignment(sdata,key="Shapes",bin_size=8,column="napari",target_coordinate_system="global"):
+    
+    try:
+        sdata[key]
+    except:
+        raise ValueError("Please provide a valid key for the shapes in the spatial data object that assigned via Napari")
+        return
+    
+    sdata_poly=polygon_query(sdata,polygon=sdata[key].geometry.iloc[0],target_coordinate_system=target_coordinate_system)
+    
+    for cell in sdata.tables[f"square_00{bin_size}um"].obs.index:
+        if cell in sdata_poly.tables[f"square_00{bin_size}um"].obs.index:
+            sdata.tables[f"square_00{bin_size}um"].obs.loc[cell, column] = "inside region"
+        else:
+            sdata.tables[f"square_00{bin_size}um"].obs.loc[cell, column] = "outside region"
+        
     return
 
 
@@ -189,6 +218,9 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
         print("Method: Weighted Jaccard")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
         func=function_row_weighted_jaccard
+    elif method=="diagnostic":
+        print("Method: Get genes similarity diagnostics")
+        func=function_row_diagnostic
     else:    
         raise ValueError("Please provide a valid method: correlation, jaccard, wjaccard or cosine")
     results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size)(
@@ -205,9 +237,12 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     #df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
     #df.drop(columns=['assigned_cluster'],inplace=True)
     #table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
-    table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
+    if method != "diagnostic":
+        table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
+        table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
+
+
 
 
 
@@ -249,6 +284,7 @@ def function_row_cosine(row, markers_df,**kwargs):
             a[c] = 0.0
         else:
             a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
+        
     return a
 
 
@@ -268,13 +304,13 @@ def function_row_jaccard(row, markers_df, **kwargs):
         vector_set = set(markers_df.loc[c][gene_id_column].values)
         
         # Calculate intersection and union
-        intersection = len(row_set.intersection(vector_set))
+        i = row_set.intersection(vector_set)
         union = len(row_set.union(vector_set))
         
         if union == 0:
             jaccard_sim = 0.0  # If both sets are empty, define similarity as 0
         else:
-            jaccard_sim = intersection / union
+            jaccard_sim = len(i) / union
         
         a[c] = jaccard_sim
     
@@ -289,18 +325,29 @@ def function_row_overlap(row, markers_df, **kwargs):
         vector_set = set(markers_df.loc[c][gene_id_column].values)
         
         # Calculate intersection and union
-        intersection = len(row_set.intersection(vector_set))
+        i = row_set.intersection(vector_set)
         union = min(len(row_set),len(vector_set))
         
         if union == 0:
             overlap_sim = 0.0  # If both sets are empty, define similarity as 0
         else:
-            overlap_sim = intersection / union
+            overlap_sim = len(i) / union #what if min len differs, investigate!
         
-        a[c] = overlap_sim
+        a[c] = overlap_sim #return the intersection as well so we can use it later for common genes
     
     return a
 
+def function_row_diagnostic(row, markers_df, **kwargs):
+    a = {}
+    gene_id_column=kwargs.get("gene_id_column")
+    threshold=kwargs.get("threshold")
+    for c in markers_df.index.unique():
+        row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        vector_set = set(markers_df.loc[c][gene_id_column].values)
+        
+        # Calculate intersection and union
+        a[c] = row_set.intersection(vector_set)
+    return a
 
 
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
@@ -319,6 +366,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         intersection=0
         union=0
         penalty=row.values.mean()
+        i = row_set.intersection(vector_set)
         for gene in row_set.union(vector_set):
             weight = row[gene] if gene in row.index else penalty
             if gene in row_set and gene in vector_set:
@@ -345,6 +393,7 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
 
 def test_function():
     print("Easydecon loaded!")
+    print("Test function executed!")
 
 
 
