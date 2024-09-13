@@ -6,9 +6,10 @@ numpy
 stardist
 spatialdata
 spatialdata-io
-spatialdata-plot
+spatialdata-plot==0.2.4
 ipykernel
 squidpy
 joblib
 napari
 napari-spatialdata
+napari[pyqt6_experimental]
