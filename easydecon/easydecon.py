@@ -166,10 +166,10 @@ def napari_region_assignment(sdata,key="Shapes",bin_size=8,column="napari",targe
         raise ValueError("Please provide a valid key for the shapes in the spatial data object that assigned via Napari")
         return
     
-    sdata_poly=polygon_query(sdata,polygon=sdata[key].geometry.iloc[0],target_coordinate_system=target_coordinate_system)
-    
+    tmp_=polygon_query(sdata,polygon=sdata[key].geometry.iloc[0],target_coordinate_system=target_coordinate_system)
+    sdata.tables[f"square_00{bin_size}um"].obs.drop(columns=column,inplace=True,errors='ignore')
     for cell in sdata.tables[f"square_00{bin_size}um"].obs.index:
-        if cell in sdata_poly.tables[f"square_00{bin_size}um"].obs.index:
+        if cell in tmp_.tables[f"square_00{bin_size}um"].obs.index:
             sdata.tables[f"square_00{bin_size}um"].obs.loc[cell, column] = "inside region"
         else:
             sdata.tables[f"square_00{bin_size}um"].obs.loc[cell, column] = "outside region"
