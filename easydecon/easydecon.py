@@ -12,6 +12,7 @@ from joblib import Parallel, delayed
 from scipy.stats import zscore
 
 from spatialdata import polygon_query
+import warnings
 
 
 # Ensure that the progress_apply method is available
@@ -166,14 +167,15 @@ def napari_region_assignment(sdata,key="Shapes",bin_size=8,column="napari",targe
         raise ValueError("Please provide a valid key for the shapes in the spatial data object that assigned via Napari")
         return
     
-    tmp_=polygon_query(sdata,polygon=sdata[key].geometry.iloc[0],target_coordinate_system=target_coordinate_system)
     sdata.tables[f"square_00{bin_size}um"].obs.drop(columns=column,inplace=True,errors='ignore')
-    for cell in sdata.tables[f"square_00{bin_size}um"].obs.index:
-        if cell in tmp_.tables[f"square_00{bin_size}um"].obs.index:
-            sdata.tables[f"square_00{bin_size}um"].obs.loc[cell, column] = "inside region"
-        else:
-            sdata.tables[f"square_00{bin_size}um"].obs.loc[cell, column] = "outside region"
-        
+    indices_list = []
+    for g in sdata[key].geometry:
+        indices=polygon_query(sdata,polygon=g,target_coordinate_system=target_coordinate_system).tables[f"square_00{bin_size}um"].obs.index
+        indices_list.extend(indices)
+    
+    df=pd.DataFrame("No", index=sdata.tables[f"square_00{bin_size}um"].obs.index, columns=[column])
+    df[column]=np.where(df.index.isin(set(indices_list)), 'Yes', 'No')
+    sdata.tables[f"square_00{bin_size}um"].obs=pd.merge(sdata.tables[f"square_00{bin_size}um"].obs, df, left_index=True, right_index=True)
     return
 
 
@@ -185,7 +187,7 @@ def process_row(row,func, **kwargs):
         'assigned_cluster': func(row, **kwargs)
     })
 
-def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0.1):
+def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0.1,lambda_param=0.5):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
@@ -224,7 +226,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     else:    
         raise ValueError("Please provide a valid method: correlation, jaccard, wjaccard or cosine")
     results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size)(
-    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold)
+    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold,lambda_param=lambda_param)
     for index, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
     result_df = pd.DataFrame(results)
     result_df.set_index("Index",inplace=True)
@@ -272,6 +274,7 @@ def function_row_cosine(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column")
     similarity_by_column=kwargs.get("similarity_by_column")
     a = {}
+    #row=min_max_scale(row[row > 0])
     row=min_max_scale(row)
     for c in markers_df.index.unique():
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
@@ -289,10 +292,13 @@ def function_row_cosine(row, markers_df,**kwargs):
 
 
 def min_max_scale(series):
+    series = series.fillna(0)# fill nan values with 0
     min_val = series.min()
     max_val = series.max()
     if min_val == max_val:
-        return series.apply(lambda x: 0.0)  # what if all values are the same? for now, return 0
+        #return series.apply(lambda x: 0.0)  # what if all values are the same? for now, return 0
+        #warnings.warn("All values in the series are identical; returning zeros.")
+        return pd.Series(0.0, index=series.index)
     return (series - min_val) / (max_val - min_val)
 
 def function_row_jaccard(row, markers_df, **kwargs):
@@ -349,7 +355,8 @@ def function_row_diagnostic(row, markers_df, **kwargs):
         a[c] = row_set.intersection(vector_set)
     return a
 
-
+"""
+#weighted jaccard similarity function
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
     gene_id_column=kwargs.get("gene_id_column")
     threshold=kwargs.get("threshold")
@@ -357,12 +364,9 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
     
     row=row[row > threshold]
     for c in markers_df.index.unique():
-        row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        row_set = set(row.sort_values(ascending=False).index)
         vector_set = set(markers_df.loc[c][gene_id_column].values)
         
-        # Calculate intersection and union
-        #intersection = len(row_set.intersection(vector_set))
-        #union = len(row_set.union(vector_set))
         intersection=0
         union=0
         penalty=row.values.mean()
@@ -380,6 +384,71 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         a[c] = jaccard_sim
     
     #return str(max(a, key=a.get))
+    return a
+"""
+
+def function_row_weighted_jaccard(row, markers_df, **kwargs):
+
+    gene_id_column = kwargs.get("gene_id_column")
+    lambda_param = kwargs.get("lambda_param", 0.5)  # Default lambda to 1.0 if not provided
+    a = {}
+    
+    # Ensure 'row' is a pandas Series with gene names as the index
+    if not isinstance(row, pd.Series):
+        row = pd.Series(row)
+    
+    # Get the genes and their expression levels from 'row' (target set)
+    # Optionally, normalize the expression levels to ensure comparability
+    target_genes = row[row > 0]  # Select genes with expression > 0
+    # Normalize the expression levels to range between 0 and 1
+    max_expr = target_genes.max()
+    if max_expr > 0:
+        target_weights = target_genes / max_expr
+    else:
+        target_weights = target_genes  # Will be an empty Series
+
+    for c in markers_df.index.unique():
+        # Get the genes and their rankings for the current cluster 'c'
+        cluster_df = markers_df.loc[c]
+        if isinstance(cluster_df, pd.DataFrame):
+            cluster_genes = cluster_df[gene_id_column].reset_index(drop=True)
+        else:
+            cluster_genes = pd.Series([cluster_df[gene_id_column]])
+
+        # Assign weights to 'cluster_genes' based on exponential rank weighting
+        N = len(cluster_genes)
+        if N > 0:
+            # Exponential decay weighting: weights decrease exponentially with rank
+            ranks = np.arange(N)  # Rank positions starting from 0
+            weights = np.exp(-lambda_param * ranks)
+        else:
+            weights = np.array([])
+        # Create a pandas Series with weights assigned to genes
+        cluster_weights = pd.Series(weights, index=cluster_genes)
+        
+        # Union of genes in 'cluster_weights' and 'target_weights'
+        all_genes = set(cluster_weights.index).union(target_weights.index)
+        
+        # Initialize numerator and denominator for Weighted Jaccard Index
+        numerator = 0.0
+        denominator = 0.0
+        
+        for gene in all_genes:
+            # Weight in 'cluster_weights' (pseudo weight based on exponential rank), 0 if gene not present
+            a_i = cluster_weights.get(gene, 0.0)
+            # Weight in 'target_weights' (normalized expression level), 0 if gene not present
+            b_i = target_weights.get(gene, 0.0)
+            numerator += min(a_i, b_i)
+            denominator += max(a_i, b_i)
+        
+        # Compute the Weighted Jaccard Index
+        if denominator == 0:
+            jaccard_sim = 0.0
+        else:
+            jaccard_sim = numerator / denominator
+        
+        a[c] = jaccard_sim
+    
     return a
 
 
