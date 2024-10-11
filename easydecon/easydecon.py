@@ -21,6 +21,26 @@ tqdm.pandas()
 
 
 #when NAN values are present in the data, spatialdata may not produce output, so we need to replace NAN values with 0
+"""
+def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
+    try:
+        table_key = f"square_00{bin_size}um"
+        table = sdata.tables[table_key]
+    except:
+        table=sdata
+    filtered_genes = list(set(marker_genes).intersection(table.var_names))
+    gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
+    if common_group_name in table.obs.columns:
+        table.obs.drop(columns=[common_group_name], inplace=True)
+    
+    threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
+    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
+
+    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
+
+    gene_expression.index.name = "Index"
+    return gene_expression
+"""
 
 def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,quantile=0.70):
     try:
@@ -30,9 +50,15 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
         table=sdata
     spots_to_be_used = table.obs.index
     if exclude_group_names:
+        print("Excluding spots with group names:")
+        spots_g = []
         for g in exclude_group_names:
+            print(g)
             if g in table.obs.columns:
-                spots_to_be_used = spots_to_be_used.difference(table.obs[table.obs[g] != 0].index)
+                spots_g.extend(table.obs[table.obs[g] != 0].index.values.tolist())
+
+        spots_to_be_used=spots_to_be_used.difference(spots_g)
+            
 
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
     gene_expression = table[spots_to_be_used, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
@@ -42,12 +68,9 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
     gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
 
-    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='outer')
+    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
 
     table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
-
-
-
     gene_expression.index.name = "Index"
     return gene_expression
 
