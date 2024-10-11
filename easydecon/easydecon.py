@@ -22,21 +22,31 @@ tqdm.pandas()
 
 #when NAN values are present in the data, spatialdata may not produce output, so we need to replace NAN values with 0
 
-def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
+def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,quantile=0.70):
     try:
         table_key = f"square_00{bin_size}um"
         table = sdata.tables[table_key]
     except:
         table=sdata
+    spots_to_be_used = table.obs.index
+    if exclude_group_names:
+        for g in exclude_group_names:
+            if g in table.obs.columns:
+                spots_to_be_used = spots_to_be_used.difference(table.obs[table.obs[g] != 0].index)
+
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
-    gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
+    gene_expression = table[spots_to_be_used, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
     if common_group_name in table.obs.columns:
         table.obs.drop(columns=[common_group_name], inplace=True)
     
     threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
     gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
 
-    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
+    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='outer')
+
+    table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
+
+
 
     gene_expression.index.name = "Index"
     return gene_expression
@@ -223,7 +233,10 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     elif method=="diagnostic":
         print("Method: Get genes similarity diagnostics")
         func=function_row_diagnostic
-    else:    
+    elif method=="wjaccardperm":
+        print("Method: Weighted Jaccard with permutation")
+        func=permutation_test
+    else:
         raise ValueError("Please provide a valid method: correlation, jaccard, wjaccard or cosine")
     results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size)(
     delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold,lambda_param=lambda_param,weight_column=weight_column)
@@ -245,7 +258,32 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     return df
 
 
+def permutation_test(row, markers_df, num_permutations=100, **kwargs):
+    observed_scores = function_row_weighted_jaccard(row, markers_df, **kwargs)
+    null_distributions = {cluster: [] for cluster in observed_scores.keys()}
 
+    for _ in range(num_permutations):
+        # Permute gene labels in 'row'
+        permuted_row = row.copy()
+        permuted_row.index = np.random.permutation(permuted_row.index)
+
+        # Compute similarity scores for permuted data
+        permuted_scores = function_row_weighted_jaccard(permuted_row, markers_df, **kwargs)
+
+        # Collect scores for each cluster
+        for cluster, score in permuted_scores.items():
+            null_distributions[cluster].append(score)
+
+    # Calculate p-values
+    p_values = {}
+    for cluster in observed_scores.keys():
+        observed_score = observed_scores[cluster]
+        null_scores = null_distributions[cluster]
+        p = (np.sum(np.array(null_scores) >= observed_score) + 1) / (num_permutations + 1)
+        p_values[cluster] = -1*np.log10(p)
+
+    #return observed_scores, p_values
+    return p_values
 
 
 
@@ -269,8 +307,8 @@ def function_row_spearman(row, markers_df,**kwargs):
 
 
 
-"""
-#@jit(nopython=True)
+
+
 def function_row_cosine(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column")
     similarity_by_column=kwargs.get("similarity_by_column")
@@ -290,8 +328,8 @@ def function_row_cosine(row, markers_df,**kwargs):
             a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
         
     return a
+
 """
-    
 def function_row_cosine(row, markers_df, **kwargs):
     gene_id_column = kwargs.get("gene_id_column")
     similarity_by_column = kwargs.get("similarity_by_column")
@@ -326,7 +364,7 @@ def function_row_cosine(row, markers_df, **kwargs):
             # similarities[cluster] *= (valid_count / len(vector_series))
     
     return similarities
-
+"""
 
 def min_max_scale(series):
     series = series.fillna(0)# fill nan values with 0
