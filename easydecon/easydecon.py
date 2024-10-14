@@ -68,11 +68,13 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
     gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
 
+
+    gene_expression[common_group_name]=gene_expression[common_group_name].fillna(0)
     table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
 
     table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
-    gene_expression.index.name = "Index"
-    return gene_expression
+    #gene_expression.index.name = "Index"
+    return table.obs[[common_group_name]]
 
 
 
