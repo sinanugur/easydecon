@@ -42,7 +42,7 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     return gene_expression
 """
 
-def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,quantile=0.70):
+def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,quantile=0.70,method="mean"):
     try:
         table_key = f"square_00{bin_size}um"
         table = sdata.tables[table_key]
@@ -61,7 +61,13 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
             
 
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
-    gene_expression = table[spots_to_be_used, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
+    if method=="sum":
+        gene_expression = table[spots_to_be_used, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
+    elif method=="mean":
+        gene_expression = table[spots_to_be_used, filtered_genes].to_df().mean(axis=1).to_frame(common_group_name)
+    elif method=="median":
+        gene_expression = table[spots_to_be_used, filtered_genes].to_df().median(axis=1).to_frame(common_group_name)
+
     if common_group_name in table.obs.columns:
         table.obs.drop(columns=[common_group_name], inplace=True)
     
@@ -74,7 +80,8 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
 
     table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
     #gene_expression.index.name = "Index"
-    return table.obs[[common_group_name]]
+    gene_expression = table.obs[[common_group_name]]
+    return gene_expression
 
 
 
@@ -137,7 +144,7 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
     for spot in tqdm(spots_with_expression, desc='Processing spots'):
         a = {}
         for cluster in all_clusters:
-            genes = markers_df_tmp.loc[cluster][gene_id_column]
+            genes = markers_df_tmp.loc[[cluster]][gene_id_column]
             genes = [genes] if isinstance(genes, str) else genes.values
             group_expression = compute(table[spot, genes].to_df())
             a[cluster] = group_expression
@@ -222,7 +229,7 @@ def process_row(row,func, **kwargs):
         'assigned_cluster': func(row, **kwargs)
     })
 
-def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0.1,lambda_param=0.5,weight_column=None):
+def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0,lambda_param=0.5,weight_column=None):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
@@ -318,7 +325,7 @@ def function_row_spearman(row, markers_df,**kwargs):
 
     a = {}
     for c in markers_df.index.unique():
-        vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
+        vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[[c]][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[[c]][gene_id_column].values)
         l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
         valid_mask = ~vector_series.isna() & ~row.isna()
@@ -341,7 +348,7 @@ def function_row_cosine(row, markers_df,**kwargs):
     #row=min_max_scale(row[row > 0])
     row=min_max_scale(row)
     for c in markers_df.index.unique():
-        vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[c][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[c][gene_id_column].values)
+        vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[[c]][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[[c]][gene_id_column].values)
         l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
         vector_series = min_max_scale(vector_series)
@@ -407,7 +414,7 @@ def function_row_jaccard(row, markers_df, **kwargs):
     threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
         row_set = set(row[row > threshold].sort_values(ascending=False).index)
-        vector_set = set(markers_df.loc[c][gene_id_column].values)
+        vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
         # Calculate intersection and union
         i = row_set.intersection(vector_set)
@@ -428,7 +435,7 @@ def function_row_overlap(row, markers_df, **kwargs):
     threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
         row_set = set(row[row > threshold].sort_values(ascending=False).index)
-        vector_set = set(markers_df.loc[c][gene_id_column].values)
+        vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
         # Calculate intersection and union
         i = row_set.intersection(vector_set)
@@ -449,7 +456,7 @@ def function_row_diagnostic(row, markers_df, **kwargs):
     threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
         row_set = set(row[row > threshold].sort_values(ascending=False).index)
-        vector_set = set(markers_df.loc[c][gene_id_column].values)
+        vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
         # Calculate intersection and union
         a[c] = row_set.intersection(vector_set)
@@ -570,7 +577,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
     # Iterate over each cluster
     for c in markers_df.index.unique():
         # Extract genes and weights for the current cluster
-        cluster_df = markers_df.loc[c]
+        cluster_df = markers_df.loc[[c]]
         cluster_genes = cluster_df[gene_id_column].reset_index(drop=True)
         if use_precalculated_weights:
             # Use pre-calculated weights
