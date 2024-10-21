@@ -13,3 +13,4 @@ joblib
 napari
 napari-spatialdata
 napari[pyqt6_experimental]
+xlrd

@@ -272,7 +272,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
         raise ValueError("Please provide a valid method: correlation, jaccard, wjaccard or cosine")
     print("Number of threads used:",config.n_jobs)
     print("Batch size:",config.batch_size)
-    results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size,timeout=3000)(
+    results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size,timeout=30000)(
     delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold,lambda_param=lambda_param,weight_column=weight_column)
     for index, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
     result_df = pd.DataFrame(results)
