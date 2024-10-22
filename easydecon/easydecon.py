@@ -251,29 +251,38 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_spearman(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
         func=function_row_spearman
     elif method=="cosine":
-        print("Method: Cosine")
+        print("Method: Cosine similarity")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
         func=function_row_cosine
     elif method=="jaccard":
-        print("Method: Jaccard")
+        print("Method: Jaccard similarity")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
         func=function_row_jaccard
     elif method=="overlap":
-        print("Method: Overlap")
+        print("Method: Overlap/Szymkiewicz–Simpson similarity")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
         func=function_row_overlap
     elif method=="wjaccard":
-        print("Method: Weighted Jaccard")
+        print("Method: Weighted Jaccard similarity")
         #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_weighted_jaccard(row, markers_df,gene_id_column=gene_id_column,threshold=threshold)}), axis=1)
         func=function_row_weighted_jaccard
     elif method=="diagnostic":
-        print("Method: Get genes similarity diagnostics")
+        print("Method: Get genes names")
         func=function_row_diagnostic
+    elif method=="sum":
+        print("Method: Sum of gene expression")
+        func=function_row_sum
+    elif method=="mean":
+        print("Method: Mean of gene expression")
+        func=function_row_mean
+    elif method=="median":
+        print("Method: Median of gene expression")
+        func=function_row_median
     elif method=="wjaccardperm":
         print("Method: Weighted Jaccard with permutation")
         func=permutation_test
     else:
-        raise ValueError("Please provide a valid method: correlation, jaccard, wjaccard or cosine")
+        raise ValueError("Please provide a valid method: correlation, cosine, jaccard, overlap, wjaccard, diagnostic, sum, mean, median")
     print("Number of threads used:",config.n_jobs)
     print("Batch size:",config.batch_size)
     results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size,timeout=30000)(
@@ -467,6 +476,48 @@ def function_row_diagnostic(row, markers_df, **kwargs):
         
         # Calculate intersection and union
         a[c] = row_set.intersection(vector_set)
+    return a
+
+def function_row_sum(row, markers_df, **kwargs):
+    a = {}
+    gene_id_column=kwargs.get("gene_id_column")
+    #threshold=kwargs.get("threshold")
+    for c in markers_df.index.unique():
+        #row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
+        vector_set = markers_df.loc[[c]][gene_id_column].values
+        
+        
+        # Calculate intersection and union
+        #a[c] = row_set.intersection(vector_set)
+        a[c] = row[vector_set].sum()
+    return a
+
+def function_row_mean(row, markers_df, **kwargs):
+    a = {}
+    gene_id_column=kwargs.get("gene_id_column")
+    #threshold=kwargs.get("threshold")
+    for c in markers_df.index.unique():
+        #row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
+        vector_set = markers_df.loc[[c]][gene_id_column].values
+        
+        
+        # Calculate intersection and union
+        #a[c] = row_set.intersection(vector_set)
+        a[c] = row[vector_set].mean()
+    return a
+
+def function_row_median(row, markers_df, **kwargs):
+    a = {}
+    gene_id_column=kwargs.get("gene_id_column")
+    #threshold=kwargs.get("threshold")
+    for c in markers_df.index.unique():
+        #row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
+        vector_set = markers_df.loc[[c]][gene_id_column].values
+        
+        
+        # Calculate intersection and union
+        #a[c] = row_set.intersection(vector_set)
+        a[c] = row[vector_set].median()
     return a
 
 """
