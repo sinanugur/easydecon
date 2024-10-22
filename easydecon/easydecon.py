@@ -5,7 +5,10 @@ import spatialdata as sp
 import spatialdata_io
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
-from tqdm import tqdm
+try:
+    from tqdm.notebook import tqdm  # Use tqdm for Jupyter notebooks
+except ImportError:
+    from tqdm import tqdm  # Fallback to standard tqdm for other environment
 from .config import config
 
 from joblib import Parallel, delayed
@@ -229,7 +232,7 @@ def process_row(row,func, **kwargs):
         'assigned_cluster': func(row, **kwargs)
     })
 
-def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="correlation",threshold=0,lambda_param=0.5,weight_column=None):
+def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="wjaccard",lambda_param=0.5,weight_column=None):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
@@ -273,7 +276,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     print("Number of threads used:",config.n_jobs)
     print("Batch size:",config.batch_size)
     results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size,timeout=30000)(
-    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold,lambda_param=lambda_param,weight_column=weight_column)
+    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,lambda_param=lambda_param,weight_column=weight_column)
     for index, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
     result_df = pd.DataFrame(results)
     result_df.set_index("Index",inplace=True)
@@ -413,9 +416,10 @@ def min_max_scale(series):
 def function_row_jaccard(row, markers_df, **kwargs):
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
-    threshold=kwargs.get("threshold")
+    #threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
-        row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        #row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
         vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
         # Calculate intersection and union
@@ -434,9 +438,9 @@ def function_row_jaccard(row, markers_df, **kwargs):
 def function_row_overlap(row, markers_df, **kwargs):
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
-    threshold=kwargs.get("threshold")
+    #threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
-        row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
         vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
         # Calculate intersection and union
@@ -455,9 +459,9 @@ def function_row_overlap(row, markers_df, **kwargs):
 def function_row_diagnostic(row, markers_df, **kwargs):
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
-    threshold=kwargs.get("threshold")
+    #threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
-        row_set = set(row[row > threshold].sort_values(ascending=False).index)
+        row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
         vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
         # Calculate intersection and union
