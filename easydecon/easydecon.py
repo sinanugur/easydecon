@@ -5,10 +5,10 @@ import spatialdata as sp
 import spatialdata_io
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
-try:
-    from tqdm.notebook import tqdm  # Use tqdm for Jupyter notebooks
-except ImportError:
-    from tqdm import tqdm  # Fallback to standard tqdm for other environment
+#from tqdm import tqdm
+from tqdm.auto import tqdm
+
+
 from .config import config
 
 from joblib import Parallel, delayed
@@ -142,7 +142,8 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
     all_spots = table.obs.index
     all_clusters = markers_df_tmp.index.unique()
     df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
-    
+    tqdm._instances.clear()
+
     # Process only spots with expression
     for spot in tqdm(spots_with_expression, desc='Processing spots'):
         a = {}
