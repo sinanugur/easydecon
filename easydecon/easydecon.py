@@ -7,6 +7,9 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 #from tqdm import tqdm
 from tqdm.auto import tqdm
+from skimage.filters import threshold_otsu
+from skimage.filters import threshold_yen
+from skimage.filters import threshold_li
 
 
 from .config import config
@@ -45,7 +48,7 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     return gene_expression
 """
 
-def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,quantile=0.70,method="mean"):
+def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,filtering_algorithm="yen",quantile=None,aggregation_method="sum",add_to_obs=True):
     try:
         table_key = f"square_00{bin_size}um"
         table = sdata.tables[table_key]
@@ -64,28 +67,39 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
             
 
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
-    if method=="sum":
+    if aggregation_method=="sum":
         gene_expression = table[spots_to_be_used, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
-    elif method=="mean":
+    elif aggregation_method=="mean":
         gene_expression = table[spots_to_be_used, filtered_genes].to_df().mean(axis=1).to_frame(common_group_name)
-    elif method=="median":
+    elif aggregation_method=="median":
         gene_expression = table[spots_to_be_used, filtered_genes].to_df().median(axis=1).to_frame(common_group_name)
 
-    if common_group_name in table.obs.columns:
-        table.obs.drop(columns=[common_group_name], inplace=True)
-    
-    threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
-    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
+
+    if quantile is not None:
+        threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
+        gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
+    else:
+        if filtering_algorithm=="otsu":
+            threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
+        elif filtering_algorithm=="yen":
+            threshold=threshold_yen(gene_expression[gene_expression[common_group_name] !=0].values)
+        elif filtering_algorithm=="li":
+            threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
+        else:
+            raise ValueError("Please provide a valid filtering algorithm: otsu, yen, li or use a quantile value")
+        gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold, gene_expression[common_group_name], 0)
 
 
     gene_expression[common_group_name]=gene_expression[common_group_name].fillna(0)
-    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
-
-    table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
+    if add_to_obs:
+        if common_group_name in table.obs.columns:
+            table.obs.drop(columns=[common_group_name], inplace=True)
+        table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
+        table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
+    
     #gene_expression.index.name = "Index"
-    gene_expression = table.obs[[common_group_name]]
+    #gene_expression = table.obs[[common_group_name]]
     return gene_expression
-
 
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
@@ -142,7 +156,7 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
     all_spots = table.obs.index
     all_clusters = markers_df_tmp.index.unique()
     df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
-    tqdm._instances.clear()
+    #tqdm._instances.clear()
 
     # Process only spots with expression
     for spot in tqdm(spots_with_expression, desc='Processing spots'):
