@@ -48,7 +48,9 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     return gene_expression
 """
 
-def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[], bin_size=8,filtering_algorithm="yen",quantile=None,aggregation_method="sum",add_to_obs=True):
+def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[],
+                                              bin_size=8,filtering_algorithm="yen",quantile=None,
+                                              aggregation_method="sum",add_to_obs=True):
     try:
         table_key = f"square_00{bin_size}um"
         table = sdata.tables[table_key]
@@ -93,7 +95,7 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     gene_expression[common_group_name]=gene_expression[common_group_name].fillna(0)
     if add_to_obs:
         if common_group_name in table.obs.columns:
-            table.obs.drop(columns=[common_group_name], inplace=True)
+            table.obs.drop(columns=[common_group_name], inplace=True,errors='ignore')
         table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
         table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
     
@@ -103,7 +105,9 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
 
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
-def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups"): #100
+def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
+                           bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",
+                           ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups"): #100
     table = sdata.tables[f"square_00{bin_size}um"]
 
     if adata is None:
@@ -130,7 +134,8 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],bi
     df.set_index(celltype,inplace=True)
     return df
 
-def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",method="mean"):
+def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
+                                      bin_size=8,gene_id_column="names",aggregation_method="mean",add_to_obs=True):
 
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
@@ -145,11 +150,11 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
         print("common_group_name column not found in the table, processing all spots.")
         spots_with_expression = table.obs.index
 
-    if method=="mean":
+    if aggregation_method=="mean":
         compute = lambda x: np.mean(x, axis=1).values
-    elif method=="median":
+    elif aggregation_method=="median":
         compute = lambda x: np.median(x, axis=1).values
-    elif method=="sum":
+    elif aggregation_method=="sum":
         compute = lambda x: np.sum(x, axis=1).values
 
     # Preallocate DataFrame with zeros
@@ -170,8 +175,10 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,bi
         # Directly assign to preallocated DataFrame
         df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
     
-    table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
+    if add_to_obs:
+        table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
+        table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
+    
     return df
 
 
@@ -247,7 +254,10 @@ def process_row(row,func, **kwargs):
         'assigned_cluster': func(row, **kwargs)
     })
 
-def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",method="wjaccard",lambda_param=0.5,weight_column=None):
+def get_clusters_by_similarity_on_tissue(sdata,markers_df,
+                                         common_group_name=None,bin_size=8,
+                                         gene_id_column="names",similarity_by_column="logfoldchanges",
+                                         method="wjaccard",lambda_param=0.5,weight_column=None,add_to_obs=True):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
@@ -313,7 +323,7 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,common_group_name=None
     #df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
     #df.drop(columns=['assigned_cluster'],inplace=True)
     #table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
-    if method != "diagnostic":
+    if method != "diagnostic" or add_to_obs:
         table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
         table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     return df
@@ -708,6 +718,20 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
     print("DataFrame added to SpatialData object")
     print(table.obs.head())
     return
+
+def apply_filtering_algorithm(df,filtering_algorithm="yen"):
+
+
+    if filtering_algorithm=="otsu":
+        threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
+    elif filtering_algorithm=="yen":
+        threshold=threshold_yen(gene_expression[gene_expression[common_group_name] !=0].values)
+    elif filtering_algorithm=="li":
+        threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
+    else:
+        raise ValueError("Please provide a valid filtering algorithm: yen, otsu or li")
+    return df_filtered
+
 
 def test_function():
     print("Easydecon loaded!")
