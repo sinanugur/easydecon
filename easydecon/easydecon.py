@@ -10,6 +10,7 @@ from tqdm.auto import tqdm
 from skimage.filters import threshold_otsu
 from skimage.filters import threshold_yen
 from skimage.filters import threshold_li
+from sklearn.mixture import GaussianMixture
 
 
 from .config import config
@@ -26,30 +27,8 @@ tqdm.pandas()
 
 
 
-#when NAN values are present in the data, spatialdata may not produce output, so we need to replace NAN values with 0
-"""
-def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name, bin_size=8,quantile=0.70):
-    try:
-        table_key = f"square_00{bin_size}um"
-        table = sdata.tables[table_key]
-    except:
-        table=sdata
-    filtered_genes = list(set(marker_genes).intersection(table.var_names))
-    gene_expression = table[:, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
-    if common_group_name in table.obs.columns:
-        table.obs.drop(columns=[common_group_name], inplace=True)
-    
-    threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
-    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
-
-    table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True)
-
-    gene_expression.index.name = "Index"
-    return gene_expression
-"""
-
 def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[],
-                                              bin_size=8,filtering_algorithm="yen",quantile=None,
+                                              bin_size=8,filtering_algorithm="quantile",quantile=0.7,
                                               aggregation_method="sum",add_to_obs=True):
     try:
         table_key = f"square_00{bin_size}um"
@@ -77,19 +56,21 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
         gene_expression = table[spots_to_be_used, filtered_genes].to_df().median(axis=1).to_frame(common_group_name)
 
 
-    if quantile is not None:
-        threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile)
-        gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold.values, gene_expression[common_group_name], 0)
+    #if quantile is not None:
+    #    threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile).values
+    #    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold, gene_expression[common_group_name], 0)
+    #else:
+    if filtering_algorithm=="otsu":
+        threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
+    elif filtering_algorithm=="yen":
+        threshold=threshold_yen(gene_expression[gene_expression[common_group_name] !=0].values)
+    elif filtering_algorithm=="li":
+        threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
+    elif filtering_algorithm=="quantile":
+        threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile).values
     else:
-        if filtering_algorithm=="otsu":
-            threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
-        elif filtering_algorithm=="yen":
-            threshold=threshold_yen(gene_expression[gene_expression[common_group_name] !=0].values)
-        elif filtering_algorithm=="li":
-            threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
-        else:
-            raise ValueError("Please provide a valid filtering algorithm: otsu, yen, li or use a quantile value")
-        gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values > threshold, gene_expression[common_group_name], 0)
+        raise ValueError("Please provide a valid filtering algorithm: otsu, yen, li or use quantile")
+    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold, gene_expression[common_group_name], 0)
 
 
     gene_expression[common_group_name]=gene_expression[common_group_name].fillna(0)
@@ -719,18 +700,57 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
     print(table.obs.head())
     return
 
-def apply_filtering_algorithm(df,filtering_algorithm="yen"):
+def apply_filtering_algorithm(data, filtering_algorithm="otsu",quantile=0.7,gaussian_components=2):
+    """
+    Applies a filtering algorithm to the input data. If the data is a DataFrame,
+    the algorithm is applied to each column separately. If the data is array-like,
+    the algorithm is applied to the entire array.
 
+    Parameters:
+        data (pd.DataFrame or array-like): The input data.
+        filtering_algorithm (str): The filtering algorithm to use ('yen', 'otsu', 'li').
 
-    if filtering_algorithm=="otsu":
-        threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
-    elif filtering_algorithm=="yen":
-        threshold=threshold_yen(gene_expression[gene_expression[common_group_name] !=0].values)
-    elif filtering_algorithm=="li":
-        threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
+    Returns:
+        The filtered data with values below the threshold set to zero.
+    """
+    # Define a helper function to compute the threshold
+    def compute_threshold(values, algorithm):
+        non_zero_values = values[values != 0]
+        if len(non_zero_values) == 0:
+            return 0  # All values are zero
+        if algorithm == "otsu":
+            threshold = threshold_otsu(non_zero_values)
+        elif algorithm == "yen":
+            threshold = threshold_yen(non_zero_values)
+        elif algorithm == "li":
+            threshold = threshold_li(non_zero_values)
+        elif algorithm == "quantile":
+            threshold=np.quantile(non_zero_values,quantile)
+        elif algorithm == "gaussian":
+            gmm = GaussianMixture(n_components=gaussian_components)
+            gmm.fit(non_zero_values.reshape(-1, 1))
+            means = gmm.means_.flatten()
+            threshold = np.min(means)
+        else:
+            raise ValueError("Please provide a valid filtering algorithm: yen, otsu or li")
+        return threshold
+
+    # Check if the input is a DataFrame
+    if isinstance(data, pd.DataFrame):
+        filtered_data = data.copy()
+        for column in filtered_data.columns:
+            values = filtered_data[column].values
+            threshold = compute_threshold(values, filtering_algorithm)
+            # Set values below the threshold to zero
+            filtered_data[column] = np.where(values >= threshold, values, 0)
+        return filtered_data
     else:
-        raise ValueError("Please provide a valid filtering algorithm: yen, otsu or li")
-    return df_filtered
+        # Assume the input is array-like
+        values = np.asarray(data)
+        threshold = compute_threshold(values, filtering_algorithm)
+        # Set values below the threshold to zero
+        filtered_values = np.where(values >= threshold, values, 0)
+        return filtered_values
 
 
 def test_function():

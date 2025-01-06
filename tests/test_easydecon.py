@@ -60,13 +60,21 @@ def test_get_clusters_expression_on_tissue(sdata,common_group_name,quantile):
     assert (df.index.sort_values() == cluster_expression.index.sort_values()).all()
     assert np.isclose(df.sort_index()["0"],cluster_expression.sort_index()["0"],atol=1e-5).all()
 
-def test_get_clusters_by_similarity_on_tissue(sdata,method="jaccard"):
+def test_get_clusters_by_similarity_on_tissue_jaccard(sdata,method="jaccard"):
     markers_df=read_markers_dataframe(sdata,"tests/data/test_macro_deg.xlsx",exclude_celltype=["11","12"],top_n_genes=60)
     df=pd.read_csv("tests/data/test_jaccard_similarity.csv",index_col=0)
     cluster_expression=get_clusters_by_similarity_on_tissue(sdata,markers_df=markers_df,method=method,threshold=2)
     assert (df.index.sort_values() == cluster_expression.index.sort_values()).all()
     assert np.isclose(df.sort_index()["0"],cluster_expression.sort_index()["0"],atol=1e-5).all()
 
+
+
+def test_get_clusters_by_similarity_on_tissue_wjaccard(sdata,method="wjaccard"):
+    markers_df=read_markers_dataframe(sdata,"tests/data/test_macro_deg.xlsx",exclude_celltype=["11","12"],top_n_genes=60)
+    df=pd.read_csv("tests/data/test_cosine_similarity.csv",index_col=0)
+    cluster_expression=get_clusters_by_similarity_on_tissue(sdata,markers_df=markers_df,method=method)
+    assert (df.index.sort_values() == cluster_expression.index.sort_values()).all()
+    assert np.isclose(df.sort_index()["0"],cluster_expression.sort_index()["0"],atol=1e-5).all()
 """
 def test_identify_clusters_by_similarity(sdata,macrophage_markers,common_group_name, bin_size, quantile):
     gene_expression = common_markers_gene_expression_and_filter(sdata, macrophage_markers, common_group_name, bin_size, quantile)
