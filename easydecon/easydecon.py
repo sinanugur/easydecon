@@ -238,7 +238,7 @@ def process_row(row,func, **kwargs):
 def get_clusters_by_similarity_on_tissue(sdata,markers_df,
                                          common_group_name=None,bin_size=8,
                                          gene_id_column="names",similarity_by_column="logfoldchanges",
-                                         method="wjaccard",lambda_param=0.5,weight_column=None,add_to_obs=True):
+                                         method="wjaccard",lambda_param=0.5,alpha_param=0.5,weight_column=None,add_to_obs=True):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
@@ -364,9 +364,10 @@ def function_row_spearman(row, markers_df,**kwargs):
 def function_row_cosine(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column")
     similarity_by_column=kwargs.get("similarity_by_column")
+    alpha_param=kwargs.get("alpha_param",0.5)
     a = {}
     #row=min_max_scale(row[row > 0])
-    row=min_max_scale(row)
+    #row=min_max_scale(row)
     for c in markers_df.index.unique():
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[[c]][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[[c]][gene_id_column].values)
         l = len(vector_series)
@@ -377,7 +378,7 @@ def function_row_cosine(row, markers_df,**kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*(t/l) #penalize the cosine similarity by the fraction of valid pairs
+            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*((t/l)**alpha_param) #penalize the cosine similarity by the fraction of valid pairs
         
     return a
 
