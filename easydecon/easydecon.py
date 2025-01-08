@@ -238,11 +238,11 @@ def process_row(row,func, **kwargs):
 def get_clusters_by_similarity_on_tissue(sdata,markers_df,
                                          common_group_name=None,bin_size=8,
                                          gene_id_column="names",similarity_by_column="logfoldchanges",
-                                         method="wjaccard",lambda_param=0.5,alpha_param=0.5,weight_column=None,add_to_obs=True):
+                                         method="wjaccard",lambda_param=0.5,penalty_param=0.5,weight_column=None,add_to_obs=True):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
-        table=sdata
+        table = sdata
     tqdm.pandas()
 
     if common_group_name in table.obs.columns:
@@ -291,8 +291,8 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,
     print("Number of threads used:",config.n_jobs)
     print("Batch size:",config.batch_size)
     results = Parallel(n_jobs=config.n_jobs,batch_size=config.batch_size,timeout=30000)(
-    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,lambda_param=lambda_param,alpha_param=alpha_param,weight_column=weight_column)
-    for index, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
+    delayed(process_row)(row,func, markers_df=markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,lambda_param=lambda_param,penalty_param=penalty_param,weight_column=weight_column)
+    for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(table[spots_with_expression,].to_df())))
     result_df = pd.DataFrame(results)
     result_df.set_index("Index",inplace=True)
     result_df=result_df["assigned_cluster"].apply(pd.Series)
@@ -307,6 +307,166 @@ def get_clusters_by_similarity_on_tissue(sdata,markers_df,
     if method != "diagnostic" or add_to_obs:
         table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
         table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
+    return df
+
+
+def get_clusters_by_similarity_on_tissue_new(
+    sdata,
+    markers_df,
+    common_group_name=None,
+    bin_size=8,
+    gene_id_column="names",
+    #similarity_by_column="logfoldchanges",
+    method="wjaccard",
+    #weight_column=None,
+    add_to_obs=True,
+    **method_kwargs,
+):
+    """
+    Compute cluster assignments based on a chosen similarity method.
+
+    Parameters
+    ----------
+    sdata : AnnData-like object
+        Spatial (or single-cell) data containing expression matrices.
+        It is expected to have 'tables' attribute with keys like "square_00Xum",
+        or simply be treated as a table if the key doesn't exist.
+    markers_df : pd.DataFrame
+        DataFrame containing marker genes for each cluster.
+        Rows typically represent clusters, columns represent information 
+        about each gene (e.g., logfoldchanges, names, etc.).
+    common_group_name : str, optional
+        Name of a column in `table.obs` specifying spots to process. 
+        If found, only spots where `common_group_name != 0` are processed.
+        Otherwise, all spots are processed. Default is None.
+    bin_size : int, optional
+        Determines the bin size (like "square_008um") for looking up the table 
+        in `sdata.tables`. Default is 8.
+    gene_id_column : str, optional
+        Name of the column in `markers_df` that contains gene IDs. 
+        Default is "names".
+    similarity_by_column : str, optional
+        Column in `markers_df` used to measure similarity. 
+        Default is "logfoldchanges".
+    method : str, optional
+        Method to use for computing similarity. Supported methods include:
+        "correlation", "cosine", "jaccard", "overlap", "wjaccard",
+        "diagnostic", "sum", "mean", "median", "wjaccardperm".
+        Default is "wjaccard".
+    weight_column : str, optional
+        Name of an (optional) column for weighting gene expression data.
+        Only used in certain similarity methods. Default is None.
+    add_to_obs : bool, optional
+        If True, adds the resulting assignment columns to `table.obs`. 
+        Default is True.
+    **method_kwargs : 
+        Additional, method-specific parameters. For example:
+        - For method="wjaccard": supply ``lambda_param``, ``penalty_param``, etc.
+        - For method="cosine": supply ``penalty_param``, etc.
+        - For method="jaccard": supply ``threshold``, etc.
+        - For method="correlation": supply correlation-specific parameters, etc.
+        - For method="wjaccardperm": supply permutation test parameters, etc.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame whose index matches `table.obs.index` with cluster 
+        assignment columns (or other metrics) computed by the specified method.
+    """
+    # Try to get the appropriate table from sdata; if not present, treat sdata as the table
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except (AttributeError, KeyError):
+        table = sdata
+
+    # Enable TQDM progress bar in pandas
+    tqdm.pandas()
+
+    # Determine which spots to process
+    if common_group_name in table.obs.columns:
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        print("common_group_name column not found in the table, processing all spots.")
+        spots_with_expression = table.obs.index
+
+    # Decide which function to use based on 'method'
+    # (Below, you'll need to define the actual method functions like
+    #  function_row_spearman, function_row_cosine, etc. in your code.)
+    if method == "correlation":
+        print("Method: Correlation")
+        func = function_row_spearman
+    elif method == "cosine":
+        print("Method: Cosine similarity")
+        func = function_row_cosine
+    elif method == "jaccard":
+        print("Method: Jaccard similarity")
+        func = function_row_jaccard
+    elif method == "overlap":
+        print("Method: Overlap/Szymkiewicz–Simpson similarity")
+        func = function_row_overlap
+    elif method == "wjaccard":
+        print("Method: Weighted Jaccard similarity")
+        func = function_row_weighted_jaccard
+    elif method == "diagnostic":
+        print("Method: Get genes names")
+        func = function_row_diagnostic
+    elif method == "sum":
+        print("Method: Sum of gene expression")
+        func = function_row_sum
+    elif method == "mean":
+        print("Method: Mean of gene expression")
+        func = function_row_mean
+    elif method == "median":
+        print("Method: Median of gene expression")
+        func = function_row_median
+    elif method == "wjaccardperm":
+        print("Method: Weighted Jaccard with permutation")
+        func = permutation_test
+    else:
+        raise ValueError(
+            "Please provide a valid method: correlation, cosine, jaccard, overlap, "
+            "wjaccard, diagnostic, sum, mean, median, wjaccardperm"
+        )
+
+    # Show parallelization info
+    print("Number of threads used:", config.n_jobs)
+    print("Batch size:", config.batch_size)
+
+    # Run computations in parallel
+    results = Parallel(n_jobs=config.n_jobs, batch_size=config.batch_size, timeout=30000)(
+        delayed(process_row)(
+            row,
+            func,
+            markers_df=markers_df,
+            gene_id_column=gene_id_column,
+            similarity_by_column=similarity_by_column,
+            weight_column=weight_column,
+            **method_kwargs  # pass method-specific parameters down
+        )
+        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(),
+                           total=len(table[spots_with_expression,].to_df()))
+    )
+
+    # Convert results to a DataFrame
+    result_df = pd.DataFrame(results)
+    result_df.set_index("Index", inplace=True)
+    result_df = result_df["assigned_cluster"].apply(pd.Series)
+
+    # For spots not processed (e.g., excluded by common_group_name != 0)
+    # fill with zeros or NaNs, depending on your needs
+    others_df = pd.DataFrame(
+        0, 
+        index=list(set(table.obs.index) - set(spots_with_expression)), 
+        columns=result_df.columns
+    )
+    df = pd.concat([result_df, others_df])
+
+    # Optionally merge back into table.obs
+    if method != "diagnostic" or add_to_obs:
+        # Avoid collisions with existing columns
+        table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
+        table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
+
     return df
 
 
@@ -342,6 +502,7 @@ def permutation_test(row, markers_df, num_permutations=100, **kwargs):
 def function_row_spearman(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column")
     similarity_by_column=kwargs.get("similarity_by_column")
+    penalty_param=kwargs.get("penalty_param",0.5)
 
     a = {}
     for c in markers_df.index.unique():
@@ -353,7 +514,7 @@ def function_row_spearman(row, markers_df,**kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*(t/l)
+            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l)**penalty_param)
             a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
     return a
 
@@ -364,10 +525,9 @@ def function_row_spearman(row, markers_df,**kwargs):
 def function_row_cosine(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column")
     similarity_by_column=kwargs.get("similarity_by_column")
-    alpha_param=kwargs.get("alpha_param",0.5)
+    penalty_param=kwargs.get("penalty_param",0.5)
+
     a = {}
-    #row=min_max_scale(row[row > 0])
-    #row=min_max_scale(row)
     for c in markers_df.index.unique():
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[[c]][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[[c]][gene_id_column].values)
         l = len(vector_series)
@@ -378,46 +538,10 @@ def function_row_cosine(row, markers_df,**kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*((t/l)**alpha_param) #penalize the cosine similarity by the fraction of valid pairs
+            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*((t/l)**penalty_param) #penalize the cosine similarity by the fraction of valid pairs
         
     return a
 
-"""
-def function_row_cosine(row, markers_df, **kwargs):
-    gene_id_column = kwargs.get("gene_id_column")
-    similarity_by_column = kwargs.get("similarity_by_column")
-    similarities = {}
-    
-   
-    row = min_max_scale(row[row > 0])
-    
-    for cluster in markers_df.index.unique():
-        # Extract marker genes and their values for the current cluster
-        cluster_data = markers_df.loc[cluster, [gene_id_column, similarity_by_column]]
-        vector_series = pd.Series(
-            data=cluster_data[similarity_by_column].values,
-            index=cluster_data[gene_id_column].values
-        )
-        
-        # Reindex to match 'row', filling missing values with zeros
-        vector_series = vector_series.reindex(row.index, fill_value=np.nan)
-        vector_series = min_max_scale(vector_series)
-        
-        # Identify valid positions (both vectors have non-NaN data)
-        valid_mask = ~vector_series.isna() & ~row.isna()
-        valid_count = valid_mask.sum()
-        
-        if valid_count == 0:
-            similarities[cluster] = 0.0
-        else:
-            # Compute cosine similarity
-            cosine_sim = 1 - cosine(row[valid_mask], vector_series[valid_mask])
-            similarities[cluster] = cosine_sim
-            # Optionally, include penalization if justified
-            # similarities[cluster] *= (valid_count / len(vector_series))
-    
-    return similarities
-"""
 
 def min_max_scale(series):
     series = series.fillna(0)# fill nan values with 0
@@ -526,100 +650,6 @@ def function_row_median(row, markers_df, **kwargs):
         a[c] = row[vector_set].median()
     return a
 
-"""
-#weighted jaccard similarity function
-def function_row_weighted_jaccard_old(row, markers_df, **kwargs):
-    gene_id_column=kwargs.get("gene_id_column")
-    threshold=kwargs.get("threshold")
-    a = {}
-    
-    row=row[row > threshold]
-    for c in markers_df.index.unique():
-        row_set = set(row.sort_values(ascending=False).index)
-        vector_set = set(markers_df.loc[c][gene_id_column].values)
-        
-        intersection=0
-        union=0
-        penalty=row.values.mean()
-        i = row_set.intersection(vector_set)
-        for gene in row_set.union(vector_set):
-            weight = row[gene] if gene in row.index else penalty
-            if gene in row_set and gene in vector_set:
-                intersection += weight
-            union += weight
-        if union == 0:
-            jaccard_sim = 0.0  # If both sets are empty, define similarity as 0
-        else:
-            jaccard_sim = intersection / union
-        
-        a[c] = jaccard_sim
-    
-    #return str(max(a, key=a.get))
-    return a
-
-
-def function_row_weighted_jaccard(row, markers_df, **kwargs):
-
-    gene_id_column = kwargs.get("gene_id_column")
-    lambda_param = kwargs.get("lambda_param", 0.5)  # Default lambda to 1.0 if not provided
-    a = {}
-    
-    # Ensure 'row' is a pandas Series with gene names as the index
-    if not isinstance(row, pd.Series):
-        row = pd.Series(row)
-    
-    target_genes = row[row > 0]  # Select genes with expression > 0
-    # Normalize the expression levels to range between 0 and 1
-    max_expr = target_genes.max()
-    if max_expr > 0:
-        target_weights = target_genes / max_expr
-    else:
-        target_weights = target_genes  # Will be an empty Series
-
-    for c in markers_df.index.unique():
-        # Get the genes and their rankings for the current cluster 'c'
-        cluster_df = markers_df.loc[c]
-        if isinstance(cluster_df, pd.DataFrame):
-            cluster_genes = cluster_df[gene_id_column].reset_index(drop=True)
-        else:
-            cluster_genes = pd.Series([cluster_df[gene_id_column]])
-
-        # Assign weights to 'cluster_genes' based on exponential rank weighting
-        N = len(cluster_genes)
-        if N > 0:
-            # Exponential decay weighting: weights decrease exponentially with rank
-            ranks = np.arange(N)  # Rank positions starting from 0 so it is also between 0 and 1
-            weights = np.exp(-lambda_param * ranks)
-        else:
-            weights = np.array([])
-        # Create a pandas Series with weights assigned to genes
-        cluster_weights = pd.Series(weights, index=cluster_genes)
-        
-        # Union of genes in 'cluster_weights' and 'target_weights'
-        all_genes = set(cluster_weights.index).union(target_weights.index)
-        
-        # Initialize numerator and denominator for Weighted Jaccard Index
-        numerator = 0.0
-        denominator = 0.0
-        
-        for gene in all_genes:
-            # Weight in 'cluster_weights' (pseudo weight based on exponential rank), 0 if gene not present
-            a_i = cluster_weights.get(gene, 0.0)
-            # Weight in 'target_weights' (normalized expression level), 0 if gene not present
-            b_i = target_weights.get(gene, 0.0)
-            numerator += min(a_i, b_i)
-            denominator += max(a_i, b_i)
-        
-        # Compute the Weighted Jaccard Index
-        if denominator == 0:
-            jaccard_sim = 0.0
-        else:
-            jaccard_sim = numerator / denominator
-        
-        a[c] = jaccard_sim
-    
-    return a
-"""
 
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
     gene_id_column = kwargs.get("gene_id_column","names")
@@ -760,97 +790,3 @@ def test_function():
 
 
 
-
-"""
-def identify_clusters_by_similarity(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",similarity_by_column="logfoldchanges",results_column="easydecon_similarity",method="correlation"):
-    table = sdata.tables[f"square_00{bin_size}um"]
-    tqdm.pandas()
-
-    if common_group_name in table.obs.columns:
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if method=="correlation":
-        print("Method: Correlation")
-        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_corr(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-    elif method=="cosine":
-        print("Method: Cosine")
-        #result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-        result_df = table[spots_with_expression,].to_df().progress_apply(lambda row: pd.Series({'Index': row.name, 'assigned_cluster': function_row_cosine(row, markers_df,gene_id_column=gene_id_column,similarity_by_column=similarity_by_column)}), axis=1)
-    else:    
-        raise ValueError("Please provide a valid method: correlation or cosine")
-    others_df= pd.DataFrame({'Index': list(set(table.obs.index) - set(spots_with_expression)), 'assigned_cluster': [None]*len(set(table.obs.index) - set(spots_with_expression))})
-    df=pd.concat([result_df,others_df])
-    df.set_index('Index', inplace=True)
-    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
-    df.drop(columns=['assigned_cluster'],inplace=True)
-    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    return df
-
-    
-    def identify_clusters_by_expression(sdata,markers_df,common_group_name=None,bin_size=8,gene_id_column="names",results_column="easydecon",method="mean"):
-    table = sdata.tables[f"square_00{bin_size}um"]
-    associated_cluster=dict()
-    if common_group_name in table.obs.columns:
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if method=="mean":
-        compute = lambda x: np.mean(x, axis=1).values
-    elif method=="median":
-        compute = lambda x: np.median(x, axis=1).values
-    elif method=="sum":
-        compute = lambda x: np.sum(x, axis=1).values
-
-    for spot in spots_with_expression:
-        a=dict()
-
-        for cluster in markers_df.index.unique():
-            #genes=cluster_membership_df.loc[cluster]["names"].values
-            genes=markers_df.loc[cluster][gene_id_column]
-            if isinstance(genes, str):
-                genes = [genes]
-            else:
-                genes = genes.values
-            #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().sum(axis=1).values
-            #group_expression = sdata.tables[f"square_00{bin_size}um"][spot, genes].to_df().apply(gmean,axis=1).values
-            #group_expression = table[spot, genes].to_df().mean(axis=1).values
-            group_expression = compute(table[spot, genes].to_df())
-            a[cluster]=group_expression
-        #max_cluster=str(max(a, key=a.get))
-
-        associated_cluster[spot]=str(max(a, key=a.get))
-    
-    for spot in set(table.obs.index) - set(spots_with_expression):
-        associated_cluster[spot] = None
-        
-    df=pd.DataFrame(list(associated_cluster.items()), columns=['Index', 'assigned_cluster'])
-    df.set_index('Index', inplace=True)
-    df[f'{results_column}'] = pd.Categorical(df['assigned_cluster'],categories=markers_df.index.unique())
-    df.drop(columns=['assigned_cluster'],inplace=True)
-
-    table.obs.drop(columns=[f'{results_column}'],inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    return df
-
-    def function_row_corr(row, markers_df, gene_id_column="names", similarity_by_column="logfoldchanges",threshold=1):
-    a = {}
-    markers_df_grouped = markers_df.groupby(markers_df.index)
-    row=min_max_scale(row)
-
-    for c, group in markers_df_grouped:
-        vector_series = group.set_index(gene_id_column)[similarity_by_column].reindex(row.index, fill_value=np.nan)
-        vector_series = min_max_scale(vector_series)
-        sp = spearmanr(row, vector_series, nan_policy="omit")[0]
-        a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
-    
-    #return str(max(a, key=a.get))
-    return a
-
-"""
