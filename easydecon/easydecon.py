@@ -320,7 +320,7 @@ def get_clusters_by_similarity_on_tissue_new(
     method="wjaccard",
     #weight_column=None,
     add_to_obs=True,
-    **method_kwargs,
+    **kwargs,
 ):
     """
     Compute cluster assignments based on a chosen similarity method.
@@ -433,15 +433,15 @@ def get_clusters_by_similarity_on_tissue_new(
     print("Batch size:", config.batch_size)
 
     # Run computations in parallel
-    results = Parallel(n_jobs=config.n_jobs, batch_size=config.batch_size, timeout=30000)(
+    results = Parallel(n_jobs=config.n_jobs, batch_size=config.batch_size, timeout=100000)(
         delayed(process_row)(
             row,
             func,
             markers_df=markers_df,
             gene_id_column=gene_id_column,
-            similarity_by_column=similarity_by_column,
-            weight_column=weight_column,
-            **method_kwargs  # pass method-specific parameters down
+            #similarity_by_column=method_kwargs.get("similarity_by_column"),
+            #weight_column=method_kwargs.get("weight_column"),
+            **kwargs  # pass method-specific parameters down
         )
         for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(),
                            total=len(table[spots_with_expression,].to_df()))
@@ -500,8 +500,8 @@ def permutation_test(row, markers_df, num_permutations=100, **kwargs):
 
 
 def function_row_spearman(row, markers_df,**kwargs):
-    gene_id_column=kwargs.get("gene_id_column")
-    similarity_by_column=kwargs.get("similarity_by_column")
+    gene_id_column=kwargs.get("gene_id_column","names")
+    similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
     penalty_param=kwargs.get("penalty_param",0.5)
 
     a = {}
@@ -523,9 +523,11 @@ def function_row_spearman(row, markers_df,**kwargs):
 
 
 def function_row_cosine(row, markers_df,**kwargs):
-    gene_id_column=kwargs.get("gene_id_column")
-    similarity_by_column=kwargs.get("similarity_by_column")
+    gene_id_column=kwargs.get("gene_id_column","names")
+    similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
     penalty_param=kwargs.get("penalty_param",0.5)
+    
+
 
     a = {}
     for c in markers_df.index.unique():
