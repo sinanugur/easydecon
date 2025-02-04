@@ -11,6 +11,7 @@ from skimage.filters import threshold_otsu
 from skimage.filters import threshold_yen
 from skimage.filters import threshold_li
 from sklearn.mixture import GaussianMixture
+import logging
 
 
 from .config import config
@@ -24,12 +25,79 @@ import warnings
 
 # Ensure that the progress_apply method is available
 tqdm.pandas()
+logger = logging.getLogger(__name__)
 
 
 
-def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_name,exclude_group_names=[],
-                                              bin_size=8,filtering_algorithm="quantile",quantile=0.7,
-                                              aggregation_method="sum",add_to_obs=True):
+def common_markers_gene_expression_and_filter(
+    sdata: object,
+    marker_genes: list[str],
+    common_group_name: str,
+    exclude_group_names: list[str] = [],
+    bin_size: int = 8,
+    filtering_algorithm: str = "quantile",
+    aggregation_method: str = "sum",
+    add_to_obs: bool = True,
+    **kwargs
+) -> pd.DataFrame:
+    """
+    Aggregate and filter marker gene expression in spatial transcriptomics data.
+
+    This function:
+      1. Retrieves a specific table from `sdata.tables` based on the `bin_size`.
+      2. Excludes certain spots based on provided `exclude_group_names`.
+      3. Aggregates selected marker genes (`marker_genes`) using a chosen method.
+      4. Applies a specified thresholding algorithm to filter noise.
+      5. Optionally merges results back into `table.obs`.
+
+    Parameters
+    ----------
+    sdata : object
+        The spatial transcriptomics data container, expected to have a `.tables` attribute
+        which can be indexed with a key like "square_00{bin_size}um".
+    marker_genes : List[str]
+        A list of marker gene names to be aggregated.
+    common_group_name : str
+        Column name under which the aggregated/filtered expression will be stored.
+    exclude_group_names : List[str], optional
+        Spot group names to exclude from analysis. If a name is found in `table.obs.columns`,
+        spots where this column is non-zero are excluded. Defaults to an empty list.
+    bin_size : int, optional
+        The bin size used to construct the key for retrieving the table from `sdata.tables`.
+        For example, if `bin_size=8`, the function attempts to retrieve the table at key
+        "square_008um". Defaults to 8.
+    filtering_algorithm : str, optional
+        Thresholding algorithm used to filter gene expression. Valid options:
+        - "otsu"
+        - "yen"
+        - "li"
+        - "quantile"
+        Defaults to "quantile".
+    aggregation_method : str, optional
+        Aggregation method for combining the specified marker genes. Valid options:
+        - "sum"
+        - "mean"
+        - "median"
+        Defaults to "sum".
+    add_to_obs : bool, optional
+        Whether to add the aggregated/filtered values to `table.obs`. Defaults to True.
+    **kwargs
+        Additional keyword arguments. If `filtering_algorithm="quantile"`, this should
+        include `quantile` (float between 0 and 1). For example, `quantile=0.7`.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with the aggregated and thresholded gene expression values for each spot.
+        The DataFrame contains a single column named `common_group_name`.
+
+    Notes
+    -----
+    - If no valid marker genes are found (i.e., none intersect with `table.var_names`), 
+      the function prints a warning and returns an empty DataFrame.
+    - If `add_to_obs=True`, an existing column in `table.obs` with the same name as 
+      `common_group_name` will be dropped (if present) before merging in the new data.
+    """
     try:
         table_key = f"square_00{bin_size}um"
         table = sdata.tables[table_key]
@@ -43,23 +111,32 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
             print(g)
             if g in table.obs.columns:
                 spots_g.extend(table.obs[table.obs[g] != 0].index.values.tolist())
+            else:
+                print(f"Group name {g} not found in the table.")
 
         spots_to_be_used=spots_to_be_used.difference(spots_g)
             
 
     filtered_genes = list(set(marker_genes).intersection(table.var_names))
-    if aggregation_method=="sum":
-        gene_expression = table[spots_to_be_used, filtered_genes].to_df().sum(axis=1).to_frame(common_group_name)
-    elif aggregation_method=="mean":
-        gene_expression = table[spots_to_be_used, filtered_genes].to_df().mean(axis=1).to_frame(common_group_name)
-    elif aggregation_method=="median":
-        gene_expression = table[spots_to_be_used, filtered_genes].to_df().median(axis=1).to_frame(common_group_name)
+    if not filtered_genes:
+        # Log a warning, return empty, or handle gracefully
+        print("Warning: None of the specified marker_genes are present in table.var_names.")
+        return pd.DataFrame()
+    
+    aggregation_funcs = {
+        "sum": np.sum,
+        "mean": np.mean,
+        "median": np.median
+    }
+
+    if aggregation_method not in aggregation_funcs:
+        raise ValueError("Please provide a valid aggregation method: sum, mean, or median")
+
+    aggregator = aggregation_funcs[aggregation_method]
+    gene_expression = table[spots_to_be_used, filtered_genes].to_df().agg(aggregator, axis=1)
+    gene_expression = gene_expression.to_frame(common_group_name)
 
 
-    #if quantile is not None:
-    #    threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile).values
-    #    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold, gene_expression[common_group_name], 0)
-    #else:
     if filtering_algorithm=="otsu":
         threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
     elif filtering_algorithm=="yen":
@@ -67,7 +144,7 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
     elif filtering_algorithm=="li":
         threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
     elif filtering_algorithm=="quantile":
-        threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(quantile).values
+        threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(kwargs.get("quantile",0.7)).values
     else:
         raise ValueError("Please provide a valid filtering algorithm: otsu, yen, li or use quantile")
     gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold, gene_expression[common_group_name], 0)
@@ -78,10 +155,9 @@ def common_markers_gene_expression_and_filter(sdata, marker_genes,common_group_n
         if common_group_name in table.obs.columns:
             table.obs.drop(columns=[common_group_name], inplace=True,errors='ignore')
         table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
+        #table.obs = table.obs.join(gene_expression, how='left')  
         table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
     
-    #gene_expression.index.name = "Index"
-    #gene_expression = table.obs[[common_group_name]]
     return gene_expression
 
 
@@ -306,6 +382,7 @@ def get_clusters_by_similarity_on_tissue(
     except (AttributeError, KeyError):
         table = sdata
 
+    
     # Enable TQDM progress bar in pandas
     tqdm.pandas()
 
@@ -533,7 +610,7 @@ def function_row_diagnostic(row, markers_df, **kwargs):
         row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
         vector_set = set(markers_df.loc[[c]][gene_id_column].values)
         
-        # Calculate intersection and union
+        # Calculate intersection
         a[c] = row_set.intersection(vector_set)
     return a
 
@@ -568,7 +645,6 @@ def function_row_mean(row, markers_df, **kwargs):
 def function_row_median(row, markers_df, **kwargs):
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
-    #threshold=kwargs.get("threshold")
     for c in markers_df.index.unique():
         #row_set = set(row[row > 0].sort_values(ascending=False).index) #non-zero values
         vector_set = markers_df.loc[[c]][gene_id_column].values
