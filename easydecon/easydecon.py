@@ -1,6 +1,12 @@
 import scanpy as sc
 import numpy as np
-import pandas as pd
+try:
+    import fireducks.pandas as pd
+    print("Using fireducks.pandas for enhanced functionality.")
+except ImportError:
+    import pandas as pd
+    print("fireducks.pandas not found. Falling back to standard pandas.")
+
 import spatialdata as sp
 import spatialdata_io
 from scipy.stats import spearmanr
