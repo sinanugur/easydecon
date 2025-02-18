@@ -240,7 +240,7 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
     tqdm.pandas()
 
     # Process only spots with expression
-    for spot in tqdm(spots_with_expression, desc='Processing spots'):
+    for spot in tqdm(spots_with_expression, desc='Processing spots',leave=True, position=0):
         a = {}
         for cluster in all_clusters:
             genes = markers_df_tmp.loc[[cluster]][gene_id_column]
@@ -308,7 +308,7 @@ def napari_region_assignment(sdata,key="Shapes",bin_size=8,column="napari",targe
         sdata[key]
     except:
         raise ValueError("Please provide a valid key for the shapes in the spatial data object that assigned via Napari")
-        return
+        
     
     sdata.tables[f"square_00{bin_size}um"].obs.drop(columns=column,inplace=True,errors='ignore')
     indices_list = []
@@ -446,7 +446,7 @@ def get_clusters_by_similarity_on_tissue(
         backend="loky",  # Ensure workers do not inherit unnecessary imports
     )(
         delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
-        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression),leave=False, position=0)
+        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression),leave=True, position=0)
     )
 
 
