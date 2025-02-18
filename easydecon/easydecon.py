@@ -13,7 +13,7 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 from scipy.spatial.distance import euclidean
 
-from tqdm.auto import tqdm
+#from tqdm.auto import tqdm
 from skimage.filters import threshold_otsu
 from skimage.filters import threshold_yen
 from skimage.filters import threshold_li
@@ -41,7 +41,7 @@ import warnings
 
 
 # Ensure that the progress_apply method is available
-tqdm.pandas()
+#tqdm.pandas()
 logger = logging.getLogger(__name__)
 
 
@@ -236,6 +236,8 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
     all_clusters = markers_df_tmp.index.unique()
     df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
     #tqdm._instances.clear()
+    from tqdm.auto import tqdm
+    tqdm.pandas()
 
     # Process only spots with expression
     for spot in tqdm(spots_with_expression, desc='Processing spots'):
@@ -444,7 +446,7 @@ def get_clusters_by_similarity_on_tissue(
         backend="loky",  # Ensure workers do not inherit unnecessary imports
     )(
         delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
-        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression))
+        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression),leave=False, position=0)
     )
 
 
