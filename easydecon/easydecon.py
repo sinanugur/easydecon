@@ -95,6 +95,7 @@ def common_markers_gene_expression_and_filter(
         - "sum"
         - "mean"
         - "median"
+        - "cs"
         Defaults to "sum".
     add_to_obs : bool, optional
         Whether to add the aggregated/filtered values to `table.obs`. Defaults to True.
@@ -143,7 +144,8 @@ def common_markers_gene_expression_and_filter(
     aggregation_funcs = {
         "sum": np.sum,
         "mean": np.mean,
-        "median": np.median
+        "median": np.median,
+        "cs": composite_score
     }
 
     if aggregation_method not in aggregation_funcs:
@@ -473,35 +475,6 @@ def get_clusters_by_similarity_on_tissue(
     return df
 
 
-def permutation_test(row, markers_df, num_permutations=100, **kwargs):
-    observed_scores = function_row_weighted_jaccard(row, markers_df, **kwargs)
-    null_distributions = {cluster: [] for cluster in observed_scores.keys()}
-
-    for _ in range(num_permutations):
-        # Permute gene labels in 'row'
-        permuted_row = row.copy()
-        permuted_row.index = np.random.permutation(permuted_row.index)
-
-        # Compute similarity scores for permuted data
-        permuted_scores = function_row_weighted_jaccard(permuted_row, markers_df, **kwargs)
-
-        # Collect scores for each cluster
-        for cluster, score in permuted_scores.items():
-            null_distributions[cluster].append(score)
-
-    # Calculate p-values
-    p_values = {}
-    for cluster in observed_scores.keys():
-        observed_score = observed_scores[cluster]
-        null_scores = null_distributions[cluster]
-        p = (np.sum(np.array(null_scores) >= observed_score) + 1) / (num_permutations + 1)
-        p_values[cluster] = -1*np.log10(p)
-
-    #return observed_scores, p_values
-    return p_values
-
-
-
 def function_row_spearman(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column","names")
     similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
@@ -828,3 +801,43 @@ def test_function():
     print("Easydecon loaded!")
     print("Test function executed!")
 
+#Other functions
+def permutation_test(row, markers_df, num_permutations=100, **kwargs):
+    observed_scores = function_row_weighted_jaccard(row, markers_df, **kwargs)
+    null_distributions = {cluster: [] for cluster in observed_scores.keys()}
+
+    for _ in range(num_permutations):
+        # Permute gene labels in 'row'
+        permuted_row = row.copy()
+        permuted_row.index = np.random.permutation(permuted_row.index)
+
+        # Compute similarity scores for permuted data
+        permuted_scores = function_row_weighted_jaccard(permuted_row, markers_df, **kwargs)
+
+        # Collect scores for each cluster
+        for cluster, score in permuted_scores.items():
+            null_distributions[cluster].append(score)
+
+    # Calculate p-values
+    p_values = {}
+    for cluster in observed_scores.keys():
+        observed_score = observed_scores[cluster]
+        null_scores = null_distributions[cluster]
+        p = (np.sum(np.array(null_scores) >= observed_score) + 1) / (num_permutations + 1)
+        p_values[cluster] = -1*np.log10(p)
+
+    #return observed_scores, p_values
+    return p_values
+
+def composite_score(row):
+    # Select only nonzero values from the row
+    nonzero = row[row > 0]
+    # If no genes are expressed, return 0 (or np.nan if you prefer)
+    if nonzero.empty:
+        return 0
+    # Calculate the mean of nonzero values
+    sum_nonzero = nonzero.sum()
+    # Calculate the fraction of genes with nonzero expression
+    fraction_nonzero = len(nonzero) / len(row)
+    # Return the composite score as the product of the two measures
+    return sum_nonzero * fraction_nonzero
