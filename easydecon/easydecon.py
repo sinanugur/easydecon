@@ -1,3 +1,5 @@
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 import scanpy as sc
 import numpy as np
 try:
@@ -19,7 +21,6 @@ from skimage.filters import threshold_yen
 from skimage.filters import threshold_li
 from sklearn.mixture import GaussianMixture
 import logging
-import warnings
 
 def _suppress_warnings_in_worker():
     """ Suppress warnings and logging inside joblib workers. """
@@ -44,140 +45,242 @@ import warnings
 #tqdm.pandas()
 logger = logging.getLogger(__name__)
 
-
-
 def common_markers_gene_expression_and_filter(
     sdata: object,
-    marker_genes: list[str],
-    common_group_name: str,
+    marker_genes,  # can be list, dict, or DataFrame
+    common_group_name: str = "MarkerGroup",  # used if marker_genes is a list
+    group_col: str = "group",               # DF column holding group IDs
+    gene_col: str = "names",                # DF column holding marker gene names
     exclude_group_names: list[str] = [],
     bin_size: int = 8,
-    filtering_algorithm: str = "quantile",
+    filtering_algorithm: str = "permutation",  # or "quantile"
     aggregation_method: str = "sum",
     add_to_obs: bool = True,
+    num_permutations: int = 5000,
+    alpha: float = 0.05,
+    subsample_size: int = 50000,
+    quantile: float = 0.7,
+    min_counts_quantile: float = 0.1,
     **kwargs
 ) -> pd.DataFrame:
     """
-    Aggregate and filter marker gene expression in spatial transcriptomics data.
+    Extended version allowing marker_genes as a list, dict, or DataFrame, with
+    customizable column names for the DataFrame.
 
-    This function:
-      1. Retrieves a specific table from `sdata.tables` based on the `bin_size`.
-      2. Excludes certain spots based on provided `exclude_group_names`.
-      3. Aggregates selected marker genes (`marker_genes`) using a chosen method.
-      4. Applies a specified thresholding algorithm to filter noise.
-      5. Optionally merges results back into `table.obs`.
+    If marker_genes is:
+      1) list[str]: Single group of markers -> create one column named `common_group_name`.
+      2) dict[str, list[str]]: Multiple groups -> each dict key becomes a column in table.obs.
+      3) pd.DataFrame: Must contain columns for groups and gene names (by default 'group' and 'names'),
+         but these can be overridden by `group_col` and `gene_col`.
+
+    Steps (for each group):
+      1) Compute aggregator (sum, mean, median, cs) for all bins over that group's marker genes.
+      2) If filtering_algorithm="permutation", subsample bins (subsample_size) and build a null distribution
+         by randomly picking genes of size=len(marker_genes).
+      3) If filtering_algorithm="quantile", compute threshold from (1 - quantile).
+      4) Apply cutoff to all bins (values below threshold become 0).
+      5) Merge results back into `table.obs` if `add_to_obs=True`.
 
     Parameters
     ----------
     sdata : object
-        The spatial transcriptomics data container, expected to have a `.tables` attribute
-        which can be indexed with a key like "square_00{bin_size}um".
-    marker_genes : List[str]
-        A list of marker gene names to be aggregated.
-    common_group_name : str
-        Column name under which the aggregated/filtered expression will be stored.
-    exclude_group_names : List[str], optional
-        Spot group names to exclude from analysis. If a name is found in `table.obs.columns`,
-        spots where this column is non-zero are excluded. Defaults to an empty list.
+        Spatial data container, with sdata.tables[table_key].
+    marker_genes : list, dict, or pd.DataFrame
+        - list[str] for a single group of marker genes.
+        - dict[group_name -> list_of_markers] for multiple groups.
+        - pd.DataFrame with columns [group_col, gene_col].
+    common_group_name : str, optional
+        If marker_genes is a list, the new column name. Default "MarkerGroup".
+    group_col : str, optional
+        Column name in marker_genes DataFrame for the group identifier. Default "group".
+    gene_col : str, optional
+        Column name in marker_genes DataFrame for the gene names. Default "names".
+    exclude_group_names : list[str], optional
+        Exclude spots where table.obs[g] != 0 for g in exclude_group_names.
     bin_size : int, optional
-        The bin size used to construct the key for retrieving the table from `sdata.tables`.
-        For example, if `bin_size=8`, the function attempts to retrieve the table at key
-        "square_008um". Defaults to 8.
+        Key for retrieving table from sdata (e.g. "square_008um").
     filtering_algorithm : str, optional
-        Thresholding algorithm used to filter gene expression. Valid options:
-        - "otsu"
-        - "yen"
-        - "li"
-        - "quantile"
-        Defaults to "quantile".
+        "quantile" or "permutation".
     aggregation_method : str, optional
-        Aggregation method for combining the specified marker genes. Valid options:
-        - "sum"
-        - "mean"
-        - "median"
-        - "cs"
-        Defaults to "sum".
+        "sum", "mean", "median", or "cs" (composite_score).
     add_to_obs : bool, optional
-        Whether to add the aggregated/filtered values to `table.obs`. Defaults to True.
+        Whether to merge results back into table.obs.
+    num_permutations : int, optional
+        Number of permutations (only relevant if filtering_algorithm="permutation").
+    alpha : float, optional
+        Significance level for the permutation-based cutoff. Default 0.05.
+    subsample_size : int, optional
+        How many bins to sample for the permutation-based null. Default 50000.
+    quantile : float, optional
+        Used if filtering_algorithm="quantile". Default 0.7.
     **kwargs
-        Additional keyword arguments. If `filtering_algorithm="quantile"`, this should
-        include `quantile` (float between 0 and 1). For example, `quantile=0.7`.
+        Additional arguments if needed.
 
     Returns
     -------
     pd.DataFrame
-        A DataFrame with the aggregated and thresholded gene expression values for each spot.
-        The DataFrame contains a single column named `common_group_name`.
-
-    Notes
-    -----
-    - If no valid marker genes are found (i.e., none intersect with `table.var_names`), 
-      the function prints a warning and returns an empty DataFrame.
-    - If `add_to_obs=True`, an existing column in `table.obs` with the same name as 
-      `common_group_name` will be dropped (if present) before merging in the new data.
+        The final DataFrame with aggregated + thresholded expression for each group.
+        Columns = one per group, indexed by bin.
     """
-    try:
-        table_key = f"square_00{bin_size}um"
+
+    # -----------------------------------------------------------
+    # 0) Convert marker_genes input to a dictionary: group -> list of genes
+    # -----------------------------------------------------------
+    if isinstance(marker_genes, list):
+        # Single group: user gave a plain list of gene names
+        group_dict = {common_group_name: marker_genes}
+
+    elif isinstance(marker_genes, dict):
+        # Already in dict form: group_name -> [list_of_genes]
+        group_dict = marker_genes
+
+    elif isinstance(marker_genes, pd.DataFrame):
+        # Expect columns group_col and gene_col
+        required_cols = {group_col, gene_col}
+        if not required_cols.issubset(marker_genes.columns):
+            raise ValueError(
+                f"DataFrame for marker_genes must have columns: {group_col}, {gene_col}."
+            )
+        # Build a dict: group_name -> list_of_genes
+        group_dict = {}
+        marker_genes_tmp = marker_genes.copy()
+        try:
+            marker_genes_tmp.index.names=[""]
+        except:
+            pass
+
+        for gname, sub_df in marker_genes_tmp.groupby(group_col):
+            # Extract unique gene names in this group
+            genes_for_gname = sub_df[gene_col].unique().tolist()
+            group_dict[gname] = genes_for_gname
+    else:
+        raise TypeError(
+            "marker_genes must be a list, dict, or DataFrame with the appropriate columns."
+        )
+
+    # 1) Retrieve the table
+    table_key = f"square_00{bin_size}um"
+    if table_key in sdata.tables:
         table = sdata.tables[table_key]
-    except:
-        table=sdata
+    else:
+        table = sdata  # fallback if table doesn't exist
+
+    # 2) Exclude spots
     spots_to_be_used = table.obs.index
     if exclude_group_names:
-        print("Excluding spots with group names:")
-        spots_g = []
         for g in exclude_group_names:
-            print(g)
             if g in table.obs.columns:
-                spots_g.extend(table.obs[table.obs[g] != 0].index.values.tolist())
-            else:
-                print(f"Group name {g} not found in the table.")
+                spots_excluded = table.obs[table.obs[g] != 0].index
+                spots_to_be_used = spots_to_be_used.difference(spots_excluded)
 
-        spots_to_be_used=spots_to_be_used.difference(spots_g)
-            
+    # Prepare a final DataFrame to collect group results
+    result_df = pd.DataFrame(index=spots_to_be_used)
 
-    filtered_genes = list(set(marker_genes).intersection(table.var_names))
-    if not filtered_genes:
-        # Log a warning, return empty, or handle gracefully
-        print("Warning: None of the specified marker_genes are present in table.var_names.")
-        return pd.DataFrame()
-    
+    # Aggregation functions
     aggregation_funcs = {
-        "sum": np.sum,
-        "mean": np.mean,
-        "median": np.median,
-        "cs": composite_score
+        "sum": "sum",
+        "mean": "mean",
+        "median": "median",
+        "cs": composite_score,  # or any custom aggregator
     }
 
     if aggregation_method not in aggregation_funcs:
-        raise ValueError("Please provide a valid aggregation method: sum, mean, or median")
-
+        raise ValueError("aggregation_method must be one of: sum, mean, median or cs.")
     aggregator = aggregation_funcs[aggregation_method]
-    gene_expression = table[spots_to_be_used, filtered_genes].to_df().agg(aggregator, axis=1)
-    gene_expression = gene_expression.to_frame(common_group_name)
 
+    from tqdm.auto import tqdm
+    tqdm.pandas()
+    # -----------------------------------------------------------
+    # Loop over each group in the dictionary
+    # -----------------------------------------------------------
+    for group_name, gene_list in group_dict.items():
+        # Intersect gene_list with table.var_names
+        filtered_genes = set(gene_list).intersection(table.var_names)
+        filtered_genes = list(filtered_genes)
+        if not filtered_genes:
+            print(f"Warning: No valid marker genes found for group '{group_name}'.")
+            # We'll create a column of all zeros
+            result_df[group_name] = 0
+            continue
 
-    if filtering_algorithm=="otsu":
-        threshold=threshold_otsu(gene_expression[gene_expression[common_group_name] !=0].values)
-    elif filtering_algorithm=="yen":
-        threshold=threshold_yen(gene_expression[gene_expression[common_group_name] !=0].values)
-    elif filtering_algorithm=="li":
-        threshold=threshold_li(gene_expression[gene_expression[common_group_name] !=0].values)
-    elif filtering_algorithm=="quantile":
-        threshold=gene_expression[gene_expression[common_group_name] !=0].quantile(kwargs.get("quantile",0.7)).values
-    else:
-        raise ValueError("Please provide a valid filtering algorithm: otsu, yen, li or use quantile")
-    gene_expression[common_group_name] = np.where(gene_expression[common_group_name].values >= threshold, gene_expression[common_group_name], 0)
+        # Retrieve expression for the selected spots & genes
+        expr_matrix = table[spots_to_be_used, filtered_genes].to_df()
 
+        if isinstance(aggregator, str):
+            aggregated_vals = expr_matrix.agg(aggregator, axis=1)
+        else:
+            aggregated_vals = expr_matrix.apply(aggregator, axis=1)
 
-    gene_expression[common_group_name]=gene_expression[common_group_name].fillna(0)
+        group_expression = aggregated_vals.to_frame(name=group_name)
+
+        # Apply the chosen filtering algorithm
+        if filtering_algorithm == "quantile":
+            # Threshold from non-zero aggregator values
+            non_zero_vals = group_expression[group_expression[group_name] != 0][group_name]
+            threshold = non_zero_vals.quantile(quantile)
+
+        elif filtering_algorithm == "permutation":
+            # Subsample spots
+            total_counts_series = table.obs.loc[spots_to_be_used, "total_counts"]
+            # e.g., exclude bins below the 0.1 quantile (bottom 10%)
+            cutoff_value = total_counts_series.quantile(min_counts_quantile)
+            # Keep only bins above that cutoff
+            candidate_spots = total_counts_series[total_counts_series >= cutoff_value].index
+
+            if len(candidate_spots) == 0:
+                # Edge case: if everything was below cutoff
+                print(f"Warning: no bins passed the total_counts quantile filter for {group_name}.")
+                threshold = 0
+            else:
+                # Subsample
+                if len(candidate_spots) > subsample_size:
+                    subset_spots = np.random.choice(candidate_spots, size=subsample_size, replace=False)
+                else:
+                    subset_spots = candidate_spots
+
+                # Build null distribution
+                all_expr_df = table[subset_spots, :].to_df()
+                marker_set_size = len(filtered_genes)
+
+                null_scores = []
+                for _ in tqdm(range(num_permutations),desc='Processing spots',leave=True, position=0):
+                    random_genes = np.random.choice(table.var_names, size=marker_set_size, replace=False)
+                    if isinstance(aggregator, str):
+                        random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
+                    else:
+                        random_vals = all_expr_df[random_genes].apply(aggregator, axis=1)
+                    null_scores.append(random_vals.values)
+
+                null_scores_concat = np.concatenate(null_scores)
+                threshold = np.quantile(null_scores_concat, 1 - alpha)
+
+        else:
+            raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
+
+        # Zero out values below threshold
+        group_expression[group_name] = np.where(
+            group_expression[group_name] >= threshold,
+            group_expression[group_name],
+            0
+        )
+
+        result_df[group_name] = group_expression[group_name].fillna(0)
+
+    # -----------------------------------------------------------
+    # Merge results back into obs if requested
+    # -----------------------------------------------------------
     if add_to_obs:
-        if common_group_name in table.obs.columns:
-            table.obs.drop(columns=[common_group_name], inplace=True,errors='ignore')
-        table.obs=pd.merge(table.obs, gene_expression, left_index=True, right_index=True,how='left')
-        #table.obs = table.obs.join(gene_expression, how='left')  
-        table.obs[common_group_name]=table.obs[common_group_name].fillna(0)
-    
-    return gene_expression
+        # Drop existing columns of same names if present
+        for col in result_df.columns:
+            if col in table.obs.columns:
+                table.obs.drop(columns=[col], inplace=True, errors='ignore')
+        # Merge
+        table.obs = pd.merge(table.obs, result_df, left_index=True, right_index=True, how='left')
+        for col in result_df.columns:
+            table.obs[col] = table.obs[col].fillna(0)
+
+    return result_df
+
 
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
@@ -207,7 +310,7 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
     df = df.groupby(celltype).head(top_n_genes)
     print("Unique cell types detected in the dataframe:")
     print(df[celltype].unique())
-    df.set_index(celltype,inplace=True)
+    df.set_index(celltype,inplace=True,drop=False)
     return df
 
 def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
@@ -385,7 +488,7 @@ def get_clusters_by_similarity_on_tissue(
         Default is True.
     **method_kwargs : 
         Additional, method-specific parameters. For example:
-        - For method="wjaccard": supply ``lambda_param``, ``penalty_param``, etc.
+        - For method="wjaccard": supply ``lambda_param``, etc.
         - For method="cosine": supply ``penalty_param``, etc.
         - For method="jaccard": supply ``threshold``, etc.
         - For method="correlation": supply ``penalty_param``, etc.
@@ -667,7 +770,7 @@ def function_row_median(row, markers_df, **kwargs):
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
     gene_id_column = kwargs.get("gene_id_column","names")
     weight_column = kwargs.get("weight_column", None)  # Name of the weight column in markers_df
-    lambda_param = kwargs.get("lambda_param", 1.0)  # Default lambda for exponential decay
+    lambda_param = kwargs.get("lambda_param", 0.25)  # Default lambda for exponential decay
     a = {}
     # Get the genes and their expression levels from 'row' (target set)
     # Normalize the expression levels to range between 0 and 1
@@ -801,43 +904,8 @@ def test_function():
     print("Easydecon loaded!")
     print("Test function executed!")
 
-#Other functions
-def permutation_test(row, markers_df, num_permutations=100, **kwargs):
-    observed_scores = function_row_weighted_jaccard(row, markers_df, **kwargs)
-    null_distributions = {cluster: [] for cluster in observed_scores.keys()}
 
-    for _ in range(num_permutations):
-        # Permute gene labels in 'row'
-        permuted_row = row.copy()
-        permuted_row.index = np.random.permutation(permuted_row.index)
-
-        # Compute similarity scores for permuted data
-        permuted_scores = function_row_weighted_jaccard(permuted_row, markers_df, **kwargs)
-
-        # Collect scores for each cluster
-        for cluster, score in permuted_scores.items():
-            null_distributions[cluster].append(score)
-
-    # Calculate p-values
-    p_values = {}
-    for cluster in observed_scores.keys():
-        observed_score = observed_scores[cluster]
-        null_scores = null_distributions[cluster]
-        p = (np.sum(np.array(null_scores) >= observed_score) + 1) / (num_permutations + 1)
-        p_values[cluster] = -1*np.log10(p)
-
-    #return observed_scores, p_values
-    return p_values
 
 def composite_score(row):
-    # Select only nonzero values from the row
     nonzero = row[row > 0]
-    # If no genes are expressed, return 0 (or np.nan if you prefer)
-    if nonzero.empty:
-        return 0
-    # Calculate the mean of nonzero values
-    sum_nonzero = nonzero.sum()
-    # Calculate the fraction of genes with nonzero expression
-    fraction_nonzero = len(nonzero) / len(row)
-    # Return the composite score as the product of the two measures
-    return sum_nonzero * fraction_nonzero
+    return nonzero.sum() * (len(nonzero) / len(row)) if not nonzero.empty else 0
