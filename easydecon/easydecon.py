@@ -263,7 +263,8 @@ def common_markers_gene_expression_and_filter(
 
                     for _ in tqdm(
                         range(int(num_permutations/n_subs)),
-                        desc=f"Perm sub {i+1}/{n_subs} of {current_subset_size} for {group_name}",
+                        #desc=f"Perm sub {i+1}/{n_subs} of {current_subset_size} for {group_name}",
+                        desc=f"Subsample {current_subset_size*(i+1)}/{subsample_size} for {group_name}",
                         leave=True,
                         position=0
                     ):
