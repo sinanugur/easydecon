@@ -15,7 +15,7 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 from scipy.spatial.distance import euclidean
 
-#from tqdm.auto import tqdm
+from tqdm.auto import tqdm
 from skimage.filters import threshold_otsu
 from skimage.filters import threshold_yen
 from skimage.filters import threshold_li
@@ -61,6 +61,7 @@ def common_markers_gene_expression_and_filter(
     subsample_size: int = 50000,
     quantile: float = 0.7,
     min_counts_quantile: float = 0.1,
+    n_subs: int = 5,                 # number of subsamples
     **kwargs
 ) -> pd.DataFrame:
     """
@@ -113,6 +114,12 @@ def common_markers_gene_expression_and_filter(
         How many bins to sample for the permutation-based null. Default 50000.
     quantile : float, optional
         Used if filtering_algorithm="quantile". Default 0.7.
+    min_counts_quantile : float, optional
+        Exclude bins below this quantile of table.obs["total_counts"] from permutation sampling.
+        Default 0.1 (exclude bottom 10%).
+    n_subs : int, optional
+        Number of smaller subsamples. We derive each subset size from subsample_size // n_subs.
+        Default 5.
     **kwargs
         Additional arguments if needed.
 
@@ -188,7 +195,6 @@ def common_markers_gene_expression_and_filter(
         raise ValueError("aggregation_method must be one of: sum, mean, median or cs.")
     aggregator = aggregation_funcs[aggregation_method]
 
-    from tqdm.auto import tqdm
     tqdm.pandas()
     # -----------------------------------------------------------
     # Loop over each group in the dictionary
@@ -232,26 +238,44 @@ def common_markers_gene_expression_and_filter(
                 print(f"Warning: no bins passed the total_counts quantile filter for {group_name}.")
                 threshold = 0
             else:
-                # Subsample
-                if len(candidate_spots) > subsample_size:
-                    subset_spots = np.random.choice(candidate_spots, size=subsample_size, replace=False)
-                else:
-                    subset_spots = candidate_spots
-
-                # Build null distribution
-                all_expr_df = table[subset_spots, :].to_df()
+                all_null_scores = []
                 marker_set_size = len(filtered_genes)
 
-                null_scores = []
-                for _ in tqdm(range(num_permutations),desc='Processing spots',leave=True, position=0):
-                    random_genes = np.random.choice(table.var_names, size=marker_set_size, replace=False)
-                    if isinstance(aggregator, str):
-                        random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
-                    else:
-                        random_vals = all_expr_df[random_genes].apply(aggregator, axis=1)
-                    null_scores.append(random_vals.values)
+                # Determine each subset size
+                subset_size_each = subsample_size // n_subs
+                remainder = subsample_size % n_subs  # if not divisible
 
-                null_scores_concat = np.concatenate(null_scores)
+                # n_subs loops
+                for i in range(n_subs):
+                    # For remainder distribution, you can let the first few subsets be bigger or smaller
+                    current_subset_size = subset_size_each
+                    if remainder > 0:
+                        current_subset_size += 1
+                        remainder -= 1
+
+                    if len(candidate_spots) > current_subset_size:
+                        subset_spots = np.random.choice(candidate_spots, size=current_subset_size, replace=False)
+                    else:
+                        subset_spots = candidate_spots
+
+                    # Build null distribution for this subset
+                    all_expr_df = table[subset_spots, :].to_df()
+
+                    for _ in tqdm(
+                        range(int(num_permutations/n_subs)),
+                        desc=f"Perm sub {i+1}/{n_subs} of {current_subset_size} for {group_name}",
+                        leave=True,
+                        position=0
+                    ):
+                        random_genes = np.random.choice(table.var_names, size=marker_set_size, replace=False)
+                        if isinstance(aggregator, str):
+                            random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
+                        else:
+                            random_vals = all_expr_df[random_genes].apply(aggregator, axis=1)
+                        all_null_scores.append(random_vals.values)
+
+                # Concatenate results
+                null_scores_concat = np.concatenate(all_null_scores)
                 threshold = np.quantile(null_scores_concat, 1 - alpha)
 
         else:
