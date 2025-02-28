@@ -530,13 +530,12 @@ def get_clusters_by_similarity_on_tissue(
         "sum": function_row_sum,
         "mean": function_row_mean,
         "median": function_row_median,
-        "euclidean": function_row_euclidean,
-        "wjaccardperm": permutation_test,
+        "euclidean": function_row_euclidean
     }
     if method not in similarity_methods:
         raise ValueError(
             "Invalid method. Choose from: correlation, cosine, jaccard, overlap, "
-            "wjaccard, diagnostic, sum, mean, median, wjaccardperm"
+            "wjaccard, diagnostic, sum, mean, median"
         )
 
     func = similarity_methods[method]
