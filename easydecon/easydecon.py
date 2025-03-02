@@ -14,6 +14,8 @@ import spatialdata_io
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 from scipy.spatial.distance import euclidean
+from scipy.stats import gamma
+from scipy.stats import expon
 
 from tqdm.auto import tqdm
 from skimage.filters import threshold_otsu
@@ -60,7 +62,7 @@ def common_markers_gene_expression_and_filter(
     alpha: float = 0.05,
     subsample_size: int = 50000,
     quantile: float = 0.7,
-    min_counts_quantile: float = 0.1,
+    min_counts_quantile: float = 0,
     n_subs: int = 5,                 # number of subsamples
     **kwargs
 ) -> pd.DataFrame:
@@ -116,7 +118,7 @@ def common_markers_gene_expression_and_filter(
         Used if filtering_algorithm="quantile". Default 0.7.
     min_counts_quantile : float, optional
         Exclude bins below this quantile of table.obs["total_counts"] from permutation sampling.
-        Default 0.1 (exclude bottom 10%).
+        Default 0 (exclude bottom).
     n_subs : int, optional
         Number of smaller subsamples. We derive each subset size from subsample_size // n_subs.
         Default 5.
@@ -277,7 +279,21 @@ def common_markers_gene_expression_and_filter(
 
                 # Concatenate results
                 null_scores_concat = np.concatenate(all_null_scores)
-                threshold = np.quantile(null_scores_concat, 1 - alpha)
+                nonzero_null_vals = null_scores_concat[null_scores_concat > 0]
+                if len(nonzero_null_vals) == 0:
+                    print("Warning: no positive values in null distribution, threshold set to 0.")
+                    threshold = 0
+                else:
+                    if aggregation_method != "cs":
+                        shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
+                        threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
+                        #threshold = np.quantile(nonzero_null_vals, 1 - alpha)
+
+                    else:
+                        loc_hat, scale_hat = expon.fit(nonzero_null_vals,floc=0)
+                        threshold = expon.ppf(1 - alpha, loc=loc_hat, scale=scale_hat)
+
+
 
         else:
             raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
