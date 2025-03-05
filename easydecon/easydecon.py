@@ -884,7 +884,7 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
     table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     print("DataFrame added to SpatialData object")
-    print(table.obs.head())
+    print(df.columns)
     return
 
 def apply_filtering_algorithm(data, filtering_algorithm="otsu",quantile=0.7,gaussian_components=2):
