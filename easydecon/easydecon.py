@@ -254,7 +254,6 @@ def common_markers_gene_expression_and_filter(
                     if remainder > 0:
                         current_subset_size += 1
                         remainder -= 1
-
                     if len(candidate_spots) > current_subset_size:
                         subset_spots = np.random.choice(candidate_spots, size=current_subset_size, replace=False)
                     else:
@@ -276,7 +275,6 @@ def common_markers_gene_expression_and_filter(
                         else:
                             random_vals = all_expr_df[random_genes].apply(aggregator, axis=1)
                         all_null_scores.append(random_vals.values)
-
                 # Concatenate results
                 null_scores_concat = np.concatenate(all_null_scores)
                 nonzero_null_vals = null_scores_concat[null_scores_concat > 0]
@@ -288,13 +286,9 @@ def common_markers_gene_expression_and_filter(
                         shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
                         threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
                         #threshold = np.quantile(nonzero_null_vals, 1 - alpha)
-
                     else:
                         loc_hat, scale_hat = expon.fit(nonzero_null_vals,floc=0)
                         threshold = expon.ppf(1 - alpha, loc=loc_hat, scale=scale_hat)
-
-
-
         else:
             raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
 
@@ -304,9 +298,7 @@ def common_markers_gene_expression_and_filter(
             group_expression[group_name],
             0
         )
-
         result_df[group_name] = group_expression[group_name].fillna(0)
-
     # -----------------------------------------------------------
     # Merge results back into obs if requested
     # -----------------------------------------------------------
@@ -488,6 +480,12 @@ def get_clusters_by_similarity_on_tissue(
     method="wjaccard",
     #weight_column=None,
     add_to_obs=True,
+    do_permutation: bool = False,
+    num_permutations: int = 5000,
+    alpha: float = 0.05,
+    permutation_subsample_size: int = 50000,
+    n_subs: int = 5,
+    min_counts_quantile: float = 0.0,
     **kwargs,
 ):
     """
@@ -608,6 +606,121 @@ def get_clusters_by_similarity_on_tissue(
         columns=result_df.columns
     )
     df = pd.concat([result_df, others_df])
+
+    if do_permutation:
+        # (1) pick candidate spots for building the null
+        if "total_counts" in table.obs.columns and min_counts_quantile > 0:
+            cutoff_val = table.obs["total_counts"].quantile(min_counts_quantile)
+            candidate_spots = table.obs[table.obs["total_counts"] >= cutoff_val].index
+        else:
+            candidate_spots = spots_with_expression
+
+        # possibly reduce candidate spots if too large
+        if len(candidate_spots) > permutation_subsample_size:
+            candidate_spots = np.random.choice(candidate_spots,
+                                            size=permutation_subsample_size,
+                                            replace=False)
+
+        # (2) For each cluster, build a cluster-specific null distribution
+        for cluster_name in markers_df.index.unique():
+            # A. gather the marker set for this cluster
+            cluster_genes = markers_df.loc[[cluster_name], gene_id_column].unique()
+            marker_set_size = len(cluster_genes)
+            if marker_set_size == 0:
+                print(f"[Permutation] Cluster '{cluster_name}' has no markers, skipping.")
+                continue
+
+            cluster_null_scores = []
+
+            # B. Break candidate spots into n_subs subsets
+            subset_spots_list = list(candidate_spots)
+            chunk_size = len(subset_spots_list) // n_subs
+            remainder = len(subset_spots_list) % n_subs
+            start_idx = 0
+
+            for i in range(n_subs):
+                take_size = chunk_size
+                if remainder > 0:
+                    take_size += 1
+                    remainder -= 1
+                if take_size <= 0:
+                    continue
+
+                end_idx = start_idx + take_size
+                subset_spots_segment = subset_spots_list[start_idx:end_idx]
+                start_idx = end_idx
+
+                # (C) For each subset, run partial permutations
+                # e.g. we do (num_permutations // n_subs) random draws for this chunk
+                n_perms_here = num_permutations // n_subs
+                for _ in tqdm(
+                    range(n_perms_here),
+                    desc=f"Perm cluster={cluster_name}, subset={i+1}/{n_subs}",
+                    leave=True, position=0
+                ):
+                    # 1) pick random_genes of size = marker_set_size
+                    random_genes = np.random.choice(table.var_names,
+                                                    size=marker_set_size,
+                                                    replace=False)
+
+                    # 2) build a "temp_cluster_df" so aggregator sees 'cluster_name' with 'random_genes'
+                    #    This matches how the aggregator or 'process_row_with_suppression' expects markers_df
+                    temp_cluster_df = pd.DataFrame({gene_id_column: random_genes})
+                    temp_cluster_df.index = [cluster_name] * marker_set_size
+
+                    # 3) For each spot in this subset, we create a "fake row" of expression
+                    #    for these random_genes, then call process_row_with_suppression
+                    #    to get the aggregator output. We accumulate those scores in cluster_null_scores.
+
+                    # We'll store aggregator values for each spot
+                    spot_scores = []
+                    for spot_id in subset_spots_segment:
+                        # Extract expression from table for the chosen random genes
+                        # shape => (1, marker_set_size)
+                        row_data = table[spot_id, random_genes].to_df().squeeze()
+                        # Now row_data is a Series: index = random_genes, values = expression
+
+                        # We call 'process_row_with_suppression' with the same aggregator
+                        # func, but passing the temp_cluster_df as 'markers_df'
+                        result_dict = process_row_with_suppression(
+                            row_data,
+                            func,
+                            markers_df=temp_cluster_df,
+                            gene_id_column=gene_id_column,
+                            **kwargs
+                        )
+
+                        # aggregator might return {"Index":..., "assigned_cluster": dict or float}
+                        # or something similar. We'll assume 'assigned_cluster' is
+                        # either a single float or a dict with one key = cluster_name.
+                        # Adjust to your aggregator’s output structure as needed.
+
+                        agg_val = result_dict.get("assigned_cluster", 0)
+                        if isinstance(agg_val, dict):
+                            # aggregator is cluster-wise, get the cluster's value
+                            agg_val = agg_val.get(cluster_name, 0.0)
+                        spot_scores.append(agg_val)
+
+                    # Append these aggregator values to the cluster_null_scores
+                    cluster_null_scores.extend(spot_scores)
+
+            # (D) Now we have cluster_null_scores for this cluster
+            if len(cluster_null_scores) == 0:
+                threshold_cluster = 0
+                print(f"[Permutation] No null scores for cluster '{cluster_name}', threshold=0.")
+            else:
+                threshold_cluster = np.quantile(cluster_null_scores, 1 - alpha)
+
+            # (E) Filter real aggregator in df
+            if cluster_name in df.columns:
+                # any aggregator < threshold => 0
+                df[cluster_name] = np.where(df[cluster_name] < threshold_cluster,
+                                            0, df[cluster_name])
+            else:
+                print(f"[Permutation] cluster '{cluster_name}' not found in df columns, skipping.")
+
+
+
 
     # Optionally merge back into table.obs
     if method != "diagnostic" or add_to_obs:
@@ -818,6 +931,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
     max_expr = target_genes.max()
     if max_expr > 0:
         target_weights = target_genes / max_expr
+        #target_weights = target_genes / target_genes.sum() #L1 normalization
     else:
         target_weights = target_genes  # Will be an empty Series
     
@@ -836,6 +950,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
             max_weight = cluster_weight_values.max()
             if max_weight > 0:
                 cluster_weights = cluster_weight_values / max_weight
+                #cluster_weights = cluster_weight_values / cluster_weight_values.sum() #L1 normalization
             else:
                 cluster_weights = cluster_weight_values
             # Create a pandas Series with genes as index and weights as values
@@ -846,6 +961,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
             if N > 0:
                 ranks = np.arange(N)  # Rank positions starting from 0
                 weights = np.exp(-lambda_param * ranks)
+                #weights /= weights.sum()  # Normalize weights to sum to 1 L1 normalization
             else:
                 weights = np.array([])
             # Create a pandas Series with weights assigned to genes
@@ -866,9 +982,18 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
             b_i = target_weights.get(gene, 0.0)
             numerator += min(a_i, b_i)
             denominator += max(a_i, b_i)
-        
+        """
+        # Convert dictionaries to NumPy arrays
+        all_genes_array = all_genes
+        a = np.array([cluster_weights.get(gene, 0.0) for gene in all_genes_array])
+        b = np.array([target_weights.get(gene, 0.0) for gene in all_genes_array])
+
+        # Vectorized computation
+        numerator = np.sum(np.minimum(a, b))
+        denominator = np.sum(np.maximum(a, b))
+        """
         # Compute the Weighted Jaccard Index
-        if denominator == 0:
+        if denominator == 0.0:
             jaccard_sim = 0.0
         else:
             jaccard_sim = numerator / denominator
