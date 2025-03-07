@@ -480,12 +480,6 @@ def get_clusters_by_similarity_on_tissue(
     method="wjaccard",
     #weight_column=None,
     add_to_obs=True,
-    do_permutation: bool = False,
-    num_permutations: int = 5000,
-    alpha: float = 0.05,
-    permutation_subsample_size: int = 50000,
-    n_subs: int = 5,
-    min_counts_quantile: float = 0.0,
     **kwargs,
 ):
     """
@@ -606,120 +600,6 @@ def get_clusters_by_similarity_on_tissue(
         columns=result_df.columns
     )
     df = pd.concat([result_df, others_df])
-
-    if do_permutation:
-        # (1) pick candidate spots for building the null
-        if "total_counts" in table.obs.columns and min_counts_quantile > 0:
-            cutoff_val = table.obs["total_counts"].quantile(min_counts_quantile)
-            candidate_spots = table.obs[table.obs["total_counts"] >= cutoff_val].index
-        else:
-            candidate_spots = spots_with_expression
-
-        # possibly reduce candidate spots if too large
-        if len(candidate_spots) > permutation_subsample_size:
-            candidate_spots = np.random.choice(candidate_spots,
-                                            size=permutation_subsample_size,
-                                            replace=False)
-
-        # (2) For each cluster, build a cluster-specific null distribution
-        for cluster_name in markers_df.index.unique():
-            # A. gather the marker set for this cluster
-            cluster_genes = markers_df.loc[[cluster_name], gene_id_column].unique()
-            marker_set_size = len(cluster_genes)
-            if marker_set_size == 0:
-                print(f"[Permutation] Cluster '{cluster_name}' has no markers, skipping.")
-                continue
-
-            cluster_null_scores = []
-
-            # B. Break candidate spots into n_subs subsets
-            subset_spots_list = list(candidate_spots)
-            chunk_size = len(subset_spots_list) // n_subs
-            remainder = len(subset_spots_list) % n_subs
-            start_idx = 0
-
-            for i in range(n_subs):
-                take_size = chunk_size
-                if remainder > 0:
-                    take_size += 1
-                    remainder -= 1
-                if take_size <= 0:
-                    continue
-
-                end_idx = start_idx + take_size
-                subset_spots_segment = subset_spots_list[start_idx:end_idx]
-                start_idx = end_idx
-
-                # (C) For each subset, run partial permutations
-                # e.g. we do (num_permutations // n_subs) random draws for this chunk
-                n_perms_here = num_permutations // n_subs
-                for _ in tqdm(
-                    range(n_perms_here),
-                    desc=f"Perm cluster={cluster_name}, subset={i+1}/{n_subs}",
-                    leave=True, position=0
-                ):
-                    # 1) pick random_genes of size = marker_set_size
-                    random_genes = np.random.choice(table.var_names,
-                                                    size=marker_set_size,
-                                                    replace=False)
-
-                    # 2) build a "temp_cluster_df" so aggregator sees 'cluster_name' with 'random_genes'
-                    #    This matches how the aggregator or 'process_row_with_suppression' expects markers_df
-                    temp_cluster_df = pd.DataFrame({gene_id_column: random_genes})
-                    temp_cluster_df.index = [cluster_name] * marker_set_size
-
-                    # 3) For each spot in this subset, we create a "fake row" of expression
-                    #    for these random_genes, then call process_row_with_suppression
-                    #    to get the aggregator output. We accumulate those scores in cluster_null_scores.
-
-                    # We'll store aggregator values for each spot
-                    spot_scores = []
-                    for spot_id in subset_spots_segment:
-                        # Extract expression from table for the chosen random genes
-                        # shape => (1, marker_set_size)
-                        row_data = table[spot_id, random_genes].to_df().squeeze()
-                        # Now row_data is a Series: index = random_genes, values = expression
-
-                        # We call 'process_row_with_suppression' with the same aggregator
-                        # func, but passing the temp_cluster_df as 'markers_df'
-                        result_dict = process_row_with_suppression(
-                            row_data,
-                            func,
-                            markers_df=temp_cluster_df,
-                            gene_id_column=gene_id_column,
-                            **kwargs
-                        )
-
-                        # aggregator might return {"Index":..., "assigned_cluster": dict or float}
-                        # or something similar. We'll assume 'assigned_cluster' is
-                        # either a single float or a dict with one key = cluster_name.
-                        # Adjust to your aggregator’s output structure as needed.
-
-                        agg_val = result_dict.get("assigned_cluster", 0)
-                        if isinstance(agg_val, dict):
-                            # aggregator is cluster-wise, get the cluster's value
-                            agg_val = agg_val.get(cluster_name, 0.0)
-                        spot_scores.append(agg_val)
-
-                    # Append these aggregator values to the cluster_null_scores
-                    cluster_null_scores.extend(spot_scores)
-
-            # (D) Now we have cluster_null_scores for this cluster
-            if len(cluster_null_scores) == 0:
-                threshold_cluster = 0
-                print(f"[Permutation] No null scores for cluster '{cluster_name}', threshold=0.")
-            else:
-                threshold_cluster = np.quantile(cluster_null_scores, 1 - alpha)
-
-            # (E) Filter real aggregator in df
-            if cluster_name in df.columns:
-                # any aggregator < threshold => 0
-                df[cluster_name] = np.where(df[cluster_name] < threshold_cluster,
-                                            0, df[cluster_name])
-            else:
-                print(f"[Permutation] cluster '{cluster_name}' not found in df columns, skipping.")
-
-
 
 
     # Optionally merge back into table.obs
