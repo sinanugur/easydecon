@@ -171,7 +171,7 @@ def common_markers_gene_expression_and_filter(
     # 1) Retrieve the table
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
-    except:
+    except (AttributeError, KeyError):
         table = sdata
 
     # 2) Exclude spots
@@ -325,12 +325,12 @@ def common_markers_gene_expression_and_filter(
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
 def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
-                           bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",
-                           ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups"): #100
+                           bin_size=8,top_n_genes=60,sort_by_column="scores",
+                           ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups",log2fc_min=0.25,pval_cutoff=0.05): #100
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
-    except:
-        table=sdata
+    except (AttributeError, KeyError):
+        table = sdata
 
     if adata is None:
         if filename is None:
@@ -342,11 +342,15 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
                 df=pd.read_excel(filename,dtype={gene_id_column:str,celltype:str})
     else:
         try:
-            df=sc.get.rank_genes_groups_df(adata,group=None, key=key, pval_cutoff=0.05, log2fc_min=0.25)
+            df=sc.get.rank_genes_groups_df(adata,group=None, key=key, pval_cutoff=pval_cutoff, log2fc_min=log2fc_min)
         except:
             raise ValueError("Please provide a valid adata object with rank_genes_groups key")
             
-        
+    if "logfoldchanges" in df.columns:
+        df=df[df["logfoldchanges"] >= log2fc_min]
+    if "pvals_adj" in df.columns:
+        df=df[df["pvals_adj"] <= pval_cutoff]
+
     df = df[df[gene_id_column].isin(table.var_names)] #check if the var_names are present in the spatial data
     df = df[~df[celltype].isin(exclude_celltype)]
     df = df.sort_values(by=sort_by_column, ascending=ascending)
@@ -361,9 +365,9 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
 
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
-    except:
-        table=sdata
-
+    except (AttributeError, KeyError):
+        table = sdata
+        
     markers_df_tmp=markers_df[markers_df[gene_id_column].isin(table.var_names)] #just to be sure the genes are present in the spatial data
 
     if common_group_name in table.obs.columns:
@@ -411,14 +415,12 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
 
 
 def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=True, diagnostic=None, fold_change_threshold=2.0):
-    import numpy as np
-    import pandas as pd
-    from scipy.stats import zscore
-    from tqdm import tqdm
+
+    tqdm.pandas()
 
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
-    except:
+    except (AttributeError, KeyError):
         table = sdata
 
     table.obs.drop(columns=[results_column], inplace=True, errors='ignore')
@@ -485,7 +487,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
-    except:
+    except (AttributeError, KeyError):
         table = sdata
 
     table.obs.drop(columns=[temp_column],inplace=True,errors='ignore')
@@ -941,7 +943,11 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
 
 
 def add_df_to_spatialdata(sdata,df,bin_size=8):
-    table = sdata.tables[f"square_00{bin_size}um"]
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except (AttributeError, KeyError):
+        table = sdata
+
     table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     print("DataFrame added to SpatialData object")
