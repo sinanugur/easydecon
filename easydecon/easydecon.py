@@ -55,13 +55,14 @@ def common_markers_gene_expression_and_filter(
     gene_col: str = "names",                # DF column holding marker gene names
     exclude_group_names: list[str] = [],
     bin_size: int = 8,
-    filtering_algorithm: str = "permutation",  # or "quantile"
     aggregation_method: str = "sum",
     add_to_obs: bool = True,
+    filtering_algorithm: str = "permutation",  # or "quantile"
     num_permutations: int = 5000,
     alpha: float = 0.05,
-    subsample_size: int = 50000,
-    quantile: float = 0.7,
+    subsample_size: int = 20000,
+    quantile: float = 0.7, #if quantile selected
+    parametric: bool = True, #if parametric, gamma or exponential distribution is used
     min_counts_quantile: float = 0,
     n_subs: int = 5,                 # number of subsamples
     **kwargs
@@ -168,11 +169,10 @@ def common_markers_gene_expression_and_filter(
         )
 
     # 1) Retrieve the table
-    table_key = f"square_00{bin_size}um"
-    if table_key in sdata.tables:
-        table = sdata.tables[table_key]
-    else:
-        table = sdata  # fallback if table doesn't exist
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except:
+        table = sdata
 
     # 2) Exclude spots
     spots_to_be_used = table.obs.index
@@ -229,11 +229,15 @@ def common_markers_gene_expression_and_filter(
 
         elif filtering_algorithm == "permutation":
             # Subsample spots
-            total_counts_series = table.obs.loc[spots_to_be_used, "total_counts"]
-            # e.g., exclude bins below the 0.1 quantile (bottom 10%)
-            cutoff_value = total_counts_series.quantile(min_counts_quantile)
-            # Keep only bins above that cutoff
-            candidate_spots = total_counts_series[total_counts_series >= cutoff_value].index
+            try:
+                total_counts_series = table.obs.loc[spots_to_be_used, "total_counts"]
+                # e.g., exclude bins below the 0.1 quantile (bottom 10%)
+                cutoff_value = total_counts_series.quantile(min_counts_quantile)
+                # Keep only bins above that cutoff
+                candidate_spots = total_counts_series[total_counts_series >= cutoff_value].index
+            except KeyError:
+                # No total_counts column
+                candidate_spots = spots_to_be_used
 
             if len(candidate_spots) == 0:
                 # Edge case: if everything was below cutoff
@@ -282,13 +286,16 @@ def common_markers_gene_expression_and_filter(
                     print("Warning: no positive values in null distribution, threshold set to 0.")
                     threshold = 0
                 else:
-                    if aggregation_method != "cs":
-                        shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
-                        threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
-                        #threshold = np.quantile(nonzero_null_vals, 1 - alpha)
+                    if not parametric:
+                        threshold = np.quantile(nonzero_null_vals, 1 - alpha)
                     else:
-                        loc_hat, scale_hat = expon.fit(nonzero_null_vals,floc=0)
-                        threshold = expon.ppf(1 - alpha, loc=loc_hat, scale=scale_hat)
+                        if aggregation_method != "cs":
+                            shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
+                            threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
+                            
+                        else:
+                            loc_hat, scale_hat = expon.fit(nonzero_null_vals,floc=0)
+                            threshold = expon.ppf(1 - alpha, loc=loc_hat, scale=scale_hat)
         else:
             raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
 
@@ -320,7 +327,10 @@ def common_markers_gene_expression_and_filter(
 def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
                            bin_size=8,top_n_genes=60,sort_by_column="logfoldchanges",
                            ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups"): #100
-    table = sdata.tables[f"square_00{bin_size}um"]
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except:
+        table=sdata
 
     if adata is None:
         if filename is None:
@@ -374,7 +384,7 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
     all_clusters = markers_df_tmp.index.unique()
     df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
     #tqdm._instances.clear()
-    from tqdm.auto import tqdm
+    
     tqdm.pandas()
 
     # Process only spots with expression
@@ -398,33 +408,86 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
 
 
 
-def assign_clusters_from_df(sdata,df,bin_size=8,results_column="easydecon",method="max",diagnostic=None):
-    
+
+
+def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=True, diagnostic=None, fold_change_threshold=2.0):
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import zscore
+    from tqdm import tqdm
+
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
     except:
-        table=sdata
-    table.obs.drop(columns=[results_column],inplace=True,errors='ignore')
-    if method=="max":
-        df_reindexed=df[~(df == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
-    elif method=="zmax":
-        tmp=df.replace(0,np.nan).apply(lambda x: zscore(x, nan_policy='omit'),axis=0).idxmax(axis=1)
-        df_reindexed=tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
-    else:
-        raise ValueError("Please provide a valid method: max or zmax")
-    table.obs=pd.merge(table.obs, df_reindexed, left_index=True, right_index=True)
-    if diagnostic is not None:
-        for r in table.obs[["easydecon"]].itertuples(index=True, name='Pandas'):
-            if not pd.isna(r.easydecon):
-                table.obs.at[r.Index, "diagnostic"] = list(diagnostic.loc[r.Index][r.easydecon])
-            else:
-                pass
+        table = sdata
 
-        
-    return
+    table.obs.drop(columns=[results_column], inplace=True, errors='ignore')
+
+    df_filtered = df.loc[table.obs.index]
+
+    def softmax(x):
+        exp_x = np.exp(x - np.max(x))
+        return exp_x / exp_x.sum()
+
+    if method == "max":
+        df_reindexed = df_filtered[~(df_filtered == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+
+    elif method == "zmax":
+        tmp = df_filtered.replace(0, np.nan).apply(lambda x: zscore(x, nan_policy='omit'), axis=0).idxmax(axis=1)
+        df_reindexed = tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+
+    elif method == "hybrid":
+        similarity_zscores = df_filtered.apply(zscore, axis=1).fillna(0)
+        adaptive_probs = similarity_zscores.apply(softmax, axis=1)
+
+        def adaptive_assign(row):
+            sorted_probs = row.sort_values(ascending=False)
+            min_probability = 1.0 / len(row)
+
+            if len(sorted_probs) < 2:
+                if sorted_probs.iloc[0] >= min_probability:
+                    return sorted_probs.index[0]
+                else:
+                    return np.nan
+
+            top_prob = sorted_probs.iloc[0]
+            second_prob = sorted_probs.iloc[1]
+
+            if (top_prob >= min_probability) and (top_prob >= fold_change_threshold * second_prob):
+                return sorted_probs.index[0]
+            elif allow_multiple:
+                eligible = sorted_probs[sorted_probs >= min_probability]
+                if not eligible.empty:
+                    return '|'.join(eligible.index.tolist())
+                else:
+                    return np.nan
+            else:
+                return np.nan
+
+        assigned_clusters = []
+        for _, row in tqdm(adaptive_probs.iterrows(), total=adaptive_probs.shape[0], desc="Assigning clusters"):
+            assigned_clusters.append(adaptive_assign(row))
+
+        df_reindexed = pd.DataFrame(assigned_clusters, index=adaptive_probs.index, columns=[results_column]).astype('category').reindex(table.obs.index, fill_value=np.nan)
+
+    else:
+        raise ValueError("Please provide a valid method: max, zmax, or hybrid")
+
+    table.obs = pd.merge(table.obs, df_reindexed, left_index=True, right_index=True, how="left")
+
+    if diagnostic is not None:
+        for r in table.obs[[results_column]].itertuples(index=True, name='Pandas'):
+            if not pd.isna(getattr(r, results_column)):
+                table.obs.at[r.Index, results_column] = getattr(r, results_column)
+
+    return df_reindexed
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
-    table = sdata.tables[f"square_00{bin_size}um"]
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except:
+        table = sdata
+
     table.obs.drop(columns=[temp_column],inplace=True,errors='ignore')
     #table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
     table.obs[temp_column]=table.obs[results_column].apply(lambda x: x if x in clusters else np.nan)
@@ -637,7 +700,7 @@ def function_row_spearman(row, markers_df,**kwargs):
 def function_row_cosine(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column","names")
     similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
-    penalty_param=kwargs.get("penalty_param",0.5)
+    #penalty_param=kwargs.get("penalty_param",0)
     
 
 
@@ -652,8 +715,8 @@ def function_row_cosine(row, markers_df,**kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*((t/l)**penalty_param) #penalize the cosine similarity by the fraction of valid pairs
-        
+            #a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*((t/l)**penalty_param) #penalize the cosine similarity by the fraction of valid pairs
+            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))
     return a
 
 
@@ -662,7 +725,7 @@ def function_row_cosine(row, markers_df,**kwargs):
 def function_row_euclidean(row, markers_df, **kwargs):
     gene_id_column = kwargs.get("gene_id_column", "names")
     similarity_by_column = kwargs.get("similarity_by_column", "logfoldchanges")
-    penalty_param = kwargs.get("penalty_param", 0.5)
+    #penalty_param = kwargs.get("penalty_param", 0)
     
     a = {}
     for c in markers_df.index.unique():
@@ -687,7 +750,8 @@ def function_row_euclidean(row, markers_df, **kwargs):
             similarity_val = 1 / (1 + distance_val)
             
             # Apply the penalty factor
-            a[c] = similarity_val * ((t / l) ** penalty_param)
+            #a[c] = similarity_val * ((t / l) ** penalty_param)
+            a[c] = similarity_val
     
     return a
 
@@ -725,6 +789,7 @@ def function_row_jaccard(row, markers_df, **kwargs):
     
     return a
 
+#Szymkiewicz–Simpson 
 def function_row_overlap(row, markers_df, **kwargs):
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
@@ -862,16 +927,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
             b_i = target_weights.get(gene, 0.0)
             numerator += min(a_i, b_i)
             denominator += max(a_i, b_i)
-        """
-        # Convert dictionaries to NumPy arrays
-        all_genes_array = all_genes
-        a = np.array([cluster_weights.get(gene, 0.0) for gene in all_genes_array])
-        b = np.array([target_weights.get(gene, 0.0) for gene in all_genes_array])
 
-        # Vectorized computation
-        numerator = np.sum(np.minimum(a, b))
-        denominator = np.sum(np.maximum(a, b))
-        """
         # Compute the Weighted Jaccard Index
         if denominator == 0.0:
             jaccard_sim = 0.0
