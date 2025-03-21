@@ -16,7 +16,8 @@ from scipy.spatial.distance import cosine
 from scipy.spatial.distance import euclidean
 from scipy.stats import gamma
 from scipy.stats import expon
-
+from scipy.optimize import nnls
+from scipy.stats import zscore
 from tqdm.auto import tqdm
 from skimage.filters import threshold_otsu
 from skimage.filters import threshold_yen
@@ -37,7 +38,6 @@ def process_row_with_suppression(row, func, **kwargs):
 from .config import config
 
 from joblib import Parallel, delayed
-from scipy.stats import zscore
 
 from spatialdata import polygon_query
 import warnings
@@ -410,6 +410,131 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
     return df
 
 
+def get_proportions_on_tissue(
+    sdata,
+    markers_df,
+    common_group_name=None,
+    bin_size=8,
+    gene_id_column="names",
+    similarity_by_column="logfoldchanges",
+    normalization_method="unit",  # Options: 'unit', 'zscore'
+    add_to_obs=True,
+    verbose=True,
+):
+    """
+    Compute cell-type proportions per spatial bin using NNLS-based deconvolution.
+
+    Parameters
+    ----------
+    sdata : AnnData-like object
+        Spatial data containing expression matrices.
+    markers_df : pd.DataFrame
+        DataFrame containing marker genes with fold-change or scores for each cell type.
+        The index of markers_df should represent cell-type groups.
+    common_group_name : str, optional
+        Column in table.obs to specify spots to process. If None, all spots are processed.
+    bin_size : int, optional
+        Bin size for spatial data lookup, default is 8.
+    gene_id_column : str, optional
+        Column in markers_df with gene identifiers, default is "names".
+    similarity_by_column : str, optional
+        Column in markers_df containing fold-change values, default is "logfoldchanges".
+    normalization_method : str, optional
+        Method for normalizing reference matrix, options are "unit" or "zscore", default is "unit".
+    add_to_obs : bool, optional
+        If True, add proportions to table.obs, default is True.
+    verbose : bool, optional
+        Show progress and info, default is True.
+
+    Returns
+    -------
+    pd.DataFrame
+        Cell-type proportions per spatial bin.
+    """
+    try:
+        table = sdata.tables[f"square_00{bin_size}um"]
+    except (AttributeError, KeyError):
+        table = sdata
+
+    # Determine spots to process
+    if common_group_name in table.obs.columns:
+        spots_to_process = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        if verbose:
+            print("common_group_name not found, processing all spots.")
+        spots_to_process = table.obs.index
+
+    spatial_expr = table[spots_to_process].to_df().T
+
+    # Prepare combined reference matrix from fold-change values
+    marker_groups = markers_df.index.unique()
+    all_valid_genes = set()
+    group_gene_values = {}
+
+    for group in marker_groups:
+        group_markers = markers_df.loc[[group]]
+        group_markers = group_markers[group_markers[similarity_by_column] > 0].dropna(subset=[similarity_by_column])
+        genes = group_markers[gene_id_column].values
+        valid_genes = np.intersect1d(genes, spatial_expr.index)
+
+        if len(valid_genes) == 0:
+            if verbose:
+                print(f"No valid genes found for group '{group}'. Skipping.")
+            continue
+
+        fold_changes = group_markers.set_index(gene_id_column).loc[valid_genes, similarity_by_column]
+        group_gene_values[group] = fold_changes
+        all_valid_genes.update(valid_genes)
+
+    all_valid_genes = sorted(all_valid_genes)
+    ref_matrix_df = pd.DataFrame(0, index=all_valid_genes, columns=marker_groups)
+
+    for group, gene_values in group_gene_values.items():
+        ref_matrix_df.loc[gene_values.index, group] = gene_values.values
+
+    # Normalize reference matrix
+    ref_matrix_df = ref_matrix_df.replace([np.inf, -np.inf], 0).fillna(0)
+    ref_matrix_df = ref_matrix_df.loc[ref_matrix_df.sum(axis=1) > 0]
+
+    if normalization_method == "unit":
+        ref_matrix_df = ref_matrix_df.apply(lambda x: x / np.linalg.norm(x) if np.linalg.norm(x) != 0 else x, axis=0)
+    elif normalization_method == "l1":
+        ref_matrix_df = ref_matrix_df.apply(lambda x: x / np.linalg.norm(x, ord=1) if np.linalg.norm(x, ord=1) != 0 else x, axis=0)
+    elif normalization_method == "zscore":
+        ref_matrix_df = ref_matrix_df.apply(lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) != 0 else x, axis=0).fillna(0)
+    elif normalization_method is None:
+        pass
+    else:
+        raise ValueError("normalization_method must be 'unit', 'l1' or 'zscore'")
+
+    # NNLS deconvolution in parallel
+    if verbose:
+        print("Running deconvolution with parallel processing...")
+        print("Number of threads used:", config.n_jobs)
+
+    def nnls_single_bin(bin_expr):
+        coef, _ = nnls(ref_matrix_df.values, bin_expr)
+        if coef.sum() > 0:
+            coef /= coef.sum()
+        return coef
+
+    results = Parallel(n_jobs=config.n_jobs)(
+        delayed(nnls_single_bin)(spatial_expr.loc[ref_matrix_df.index, bin_id].values)
+        for bin_id in tqdm(spatial_expr.columns, total=len(spatial_expr.columns), leave=True,position=0)
+    )
+
+    proportions_df = pd.DataFrame(
+        results, index=spatial_expr.columns, columns=ref_matrix_df.columns
+    )
+
+    if add_to_obs:
+        table.obs.drop(columns=proportions_df.columns, inplace=True, errors='ignore')
+        table.obs = pd.merge(table.obs, proportions_df, left_index=True, right_index=True)
+
+    if verbose:
+        print("NNLS deconvolution completed.")
+
+    return proportions_df
 
 
 
