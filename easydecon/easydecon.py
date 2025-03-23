@@ -419,6 +419,8 @@ def get_proportions_on_tissue(
     similarity_by_column="logfoldchanges",
     normalization_method="unit",  # Options: 'unit', 'zscore'
     add_to_obs=True,
+    method="nnls", # Options: 'nnls', 'ridge', 'lasso'
+    alpha=0.1,
     verbose=True,
 ):
     """
@@ -498,10 +500,13 @@ def get_proportions_on_tissue(
 
     if normalization_method == "unit":
         ref_matrix_df = ref_matrix_df.apply(lambda x: x / np.linalg.norm(x) if np.linalg.norm(x) != 0 else x, axis=0)
+        spatial_expr=spatial_expr.apply(lambda x: x / np.linalg.norm(x) if np.linalg.norm(x) != 0 else x, axis=0)
     elif normalization_method == "l1":
         ref_matrix_df = ref_matrix_df.apply(lambda x: x / np.linalg.norm(x, ord=1) if np.linalg.norm(x, ord=1) != 0 else x, axis=0)
+        spatial_expr=spatial_expr.apply(lambda x: x / np.linalg.norm(x, ord=1) if np.linalg.norm(x, ord=1) != 0 else x, axis=0)
     elif normalization_method == "zscore":
         ref_matrix_df = ref_matrix_df.apply(lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) != 0 else x, axis=0).fillna(0)
+        spatial_expr=spatial_expr.apply(lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) != 0 else x, axis=0).fillna(0)
     elif normalization_method is None:
         pass
     else:
@@ -512,14 +517,32 @@ def get_proportions_on_tissue(
         print("Running deconvolution with parallel processing...")
         print("Number of threads used:", config.n_jobs)
 
-    def nnls_single_bin(bin_expr):
-        coef, _ = nnls(ref_matrix_df.values, bin_expr)
+    def fit_single_bin(bin_expr):
+        _suppress_warnings_in_worker()  # Suppress inside the worker
+        if method == "nnls":
+            coef, _ = nnls(ref_matrix_df.values, bin_expr)
+        elif method == "ridge":
+            model = Ridge(alpha=alpha, fit_intercept=False, positive=True)
+            model.fit(ref_matrix_df, bin_expr)
+            coef = model.coef_
+        elif method == "lasso":
+            model = Lasso(alpha=alpha, fit_intercept=False, positive=True)
+            model.fit(ref_matrix_df, bin_expr)
+            coef = model.coef_
+            
+        else:
+            raise ValueError("method must be 'nnls', 'ridge', or 'lasso'")
+
         if coef.sum() > 0:
             coef /= coef.sum()
         return coef
+    
+    if verbose:
+        print(f"Running deconvolution with method='{method}', alpha={alpha}...")
+        print("Number of threads used:", config.n_jobs)
 
     results = Parallel(n_jobs=config.n_jobs)(
-        delayed(nnls_single_bin)(spatial_expr.loc[ref_matrix_df.index, bin_id].values)
+        delayed(fit_single_bin)(spatial_expr.loc[ref_matrix_df.index, bin_id].values)
         for bin_id in tqdm(spatial_expr.columns, total=len(spatial_expr.columns), leave=True,position=0)
     )
 
@@ -532,7 +555,7 @@ def get_proportions_on_tissue(
         table.obs = pd.merge(table.obs, proportions_df, left_index=True, right_index=True)
 
     if verbose:
-        print("NNLS deconvolution completed.")
+        print("Deconvolution completed.")
 
     return proportions_df
 
