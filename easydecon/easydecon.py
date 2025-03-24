@@ -25,6 +25,8 @@ from skimage.filters import threshold_li
 from sklearn.mixture import GaussianMixture
 import logging
 
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
+
 def _suppress_warnings_in_worker():
     """ Suppress warnings and logging inside joblib workers. """
     logging.getLogger().setLevel(logging.CRITICAL)
@@ -417,10 +419,11 @@ def get_proportions_on_tissue(
     bin_size=8,
     gene_id_column="names",
     similarity_by_column="logfoldchanges",
-    normalization_method="unit",  # Options: 'unit', 'zscore'
+    method="nnls", # Options: 'nnls', 'ridge', 'lasso', 'elastic'
+    normalization_method="unit",  # Options: 'unit', 'zscore',"l1"
     add_to_obs=True,
-    method="nnls", # Options: 'nnls', 'ridge', 'lasso'
     alpha=0.1,
+    l1_ratio=0.7,
     verbose=True,
 ):
     """
@@ -442,7 +445,7 @@ def get_proportions_on_tissue(
     similarity_by_column : str, optional
         Column in markers_df containing fold-change values, default is "logfoldchanges".
     normalization_method : str, optional
-        Method for normalizing reference matrix, options are "unit" or "zscore", default is "unit".
+        Method for normalizing reference matrix, options are "unit", "l1" or "zscore", default is "unit".
     add_to_obs : bool, optional
         If True, add proportions to table.obs, default is True.
     verbose : bool, optional
@@ -529,9 +532,13 @@ def get_proportions_on_tissue(
             model = Lasso(alpha=alpha, fit_intercept=False, positive=True)
             model.fit(ref_matrix_df, bin_expr)
             coef = model.coef_
-            
+        elif method == "elastic":
+            model = ElasticNet(alpha=alpha,l1_ratio=l1_ratio, fit_intercept=False, positive=True)
+            model.fit(ref_matrix_df, bin_expr)
+            coef = model.coef_
+
         else:
-            raise ValueError("method must be 'nnls', 'ridge', or 'lasso'")
+            raise ValueError("method must be 'nnls', 'ridge', 'lasso' or 'elastic'")
 
         if coef.sum() > 0:
             coef /= coef.sum()
