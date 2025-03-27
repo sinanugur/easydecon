@@ -518,7 +518,7 @@ def get_proportions_on_tissue(
     # NNLS deconvolution in parallel
     if verbose:
         print("Running deconvolution with parallel processing...")
-        print("Number of threads used:", config.n_jobs)
+        print(f"Normalization method: {normalization_method}")
 
     def fit_single_bin(bin_expr):
         _suppress_warnings_in_worker()  # Suppress inside the worker
@@ -545,8 +545,10 @@ def get_proportions_on_tissue(
         return coef
     
     if verbose:
-        print(f"Running deconvolution with method='{method}', alpha={alpha}...")
         print("Number of threads used:", config.n_jobs)
+        print(f"Running deconvolution with method='{method}', alpha={alpha}...")
+        
+        
 
     results = Parallel(n_jobs=config.n_jobs)(
         delayed(fit_single_bin)(spatial_expr.loc[ref_matrix_df.index, bin_id].values)
