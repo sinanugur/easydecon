@@ -463,13 +463,13 @@ def get_proportions_on_tissue(
 
     # Determine spots to process
     if common_group_name in table.obs.columns:
-        spots_to_process = table.obs[table.obs[common_group_name] != 0].index
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     else:
         if verbose:
             print("common_group_name not found, processing all spots.")
-        spots_to_process = table.obs.index
+        spots_with_expression = table.obs.index
 
-    spatial_expr = table[spots_to_process].to_df().T
+    spatial_expr = table[spots_with_expression].to_df().T
 
     # Prepare combined reference matrix from fold-change values
     marker_groups = markers_df.index.unique()
@@ -554,17 +554,25 @@ def get_proportions_on_tissue(
     )
 
     proportions_df = pd.DataFrame(
-        results, index=spatial_expr.columns, columns=ref_matrix_df.columns
+        results, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
     )
+    
+    others_df = pd.DataFrame(
+        0, 
+        index=list(set(table.obs.index) - set(spots_with_expression)), 
+        columns=ref_matrix_df.columns.values
+    )
+    df = pd.concat([proportions_df, others_df])
 
+   
     if add_to_obs:
-        table.obs.drop(columns=proportions_df.columns, inplace=True, errors='ignore')
-        table.obs = pd.merge(table.obs, proportions_df, left_index=True, right_index=True)
+        table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
+        table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
 
     if verbose:
         print("Deconvolution completed.")
 
-    return proportions_df
+    return df
 
 
 
@@ -793,7 +801,7 @@ def get_clusters_by_similarity_on_tissue(
 
     func = similarity_methods[method]
     # Show parallelization info
-    from .config import config  # Import inside function to prevent issues with joblib reloading
+    #from .config import config  # Import inside function to prevent issues with joblib reloading
     print("Number of threads used:", config.n_jobs)
     print("Batch size:", config.batch_size)
 
