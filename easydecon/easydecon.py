@@ -544,6 +544,8 @@ def get_proportions_on_tissue(
             coef /= coef.sum()
         return coef
     
+
+
     if verbose:
         print("Number of threads used:", config.n_jobs)
         print(f"Running deconvolution with method='{method}', alpha={alpha}...")
@@ -555,8 +557,11 @@ def get_proportions_on_tissue(
         for bin_id in tqdm(spatial_expr.columns, total=len(spatial_expr.columns), leave=True,position=0)
     )
 
+    all_coefs = [x[0] for x in results]
+    all_residuals = [x[1] for x in results]
+
     proportions_df = pd.DataFrame(
-        results, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
+        all_coefs, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
     )
     
     others_df = pd.DataFrame(
@@ -573,8 +578,8 @@ def get_proportions_on_tissue(
 
     if verbose:
         print("Deconvolution completed.")
-
-    return df
+    residuals_s = pd.Series(all_residuals, index=spatial_expr.columns, name='residual')
+    return (df,residuals_s)
 
 
 
