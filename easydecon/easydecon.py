@@ -543,6 +543,16 @@ def get_proportions_on_tissue(
         if coef.sum() > 0:
             coef /= coef.sum()
         return coef
+        
+        """
+        predicted = ref_matrix_df.values @ coef
+        
+        # Compute Pearson correlation
+        # pearsonr returns (correlation, p-value)
+        corr_value, pval = spearmanr(bin_expr, predicted)
+        
+        return coef, corr_value
+        """
     
 
 
@@ -557,11 +567,11 @@ def get_proportions_on_tissue(
         for bin_id in tqdm(spatial_expr.columns, total=len(spatial_expr.columns), leave=True,position=0)
     )
 
-    all_coefs = [x[0] for x in results]
-    all_residuals = [x[1] for x in results]
+    #all_coefs = [x[0] for x in results]
+    #all_residuals = [x[1] for x in results]
 
     proportions_df = pd.DataFrame(
-        all_coefs, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
+        results, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
     )
     
     others_df = pd.DataFrame(
@@ -578,15 +588,13 @@ def get_proportions_on_tissue(
 
     if verbose:
         print("Deconvolution completed.")
-    residuals_s = pd.Series(all_residuals, index=spatial_expr.columns, name='residual')
-    return (df,residuals_s)
-
+    #residuals_s = pd.Series(all_residuals, index=spatial_expr.columns, name='residual')
+    #return (df,residuals_s)
+    return df
 
 
 
 def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=True, diagnostic=None, fold_change_threshold=2.0):
-
-    tqdm.pandas()
 
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
@@ -637,7 +645,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
                 return np.nan
 
         assigned_clusters = []
-        for _, row in tqdm(adaptive_probs.iterrows(), total=adaptive_probs.shape[0], desc="Assigning clusters"):
+        for _, row in tqdm(adaptive_probs.iterrows(), total=adaptive_probs.shape[0], desc="Assigning clusters", leave=True,position=0):
             assigned_clusters.append(adaptive_assign(row))
 
         df_reindexed = pd.DataFrame(assigned_clusters, index=adaptive_probs.index, columns=[results_column]).astype('category').reindex(table.obs.index, fill_value=np.nan)
