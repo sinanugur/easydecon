@@ -312,6 +312,7 @@ def common_markers_gene_expression_and_filter(
     # Merge results back into obs if requested
     # -----------------------------------------------------------
     if add_to_obs:
+        print("Adding results to table.obs of sdata object")
         # Drop existing columns of same names if present
         for col in result_df.columns:
             if col in table.obs.columns:
@@ -406,6 +407,7 @@ def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
         df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
     
     if add_to_obs:
+        print("Adding results to table.obs of sdata object")
         table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
         table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
     
@@ -583,6 +585,7 @@ def get_proportions_on_tissue(
 
    
     if add_to_obs:
+        print("Adding results to table.obs of sdata object")
         table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
         table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
 
@@ -847,7 +850,7 @@ def get_clusters_by_similarity_on_tissue(
 
     # Optionally merge back into table.obs
     if method != "diagnostic" or add_to_obs:
-        # Avoid collisions with existing columns
+        print("Adding results to table.obs of sdata object")
         table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
         table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
 
