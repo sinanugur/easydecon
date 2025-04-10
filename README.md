@@ -23,6 +23,9 @@ To install directly from GitHub using pip into the active environment, run the f
 pip install git+https://github.com/sinanugur/easydecon.git
 ```
 
+Overview
+--------
+<img src="easydecon-overview.png" alt="Worfklow Overview"/>
 
 Usage and Documentation
 -----------------------
