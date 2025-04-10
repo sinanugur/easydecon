@@ -363,57 +363,6 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
     df.set_index(celltype,inplace=True,drop=False)
     return df
 
-def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
-                                      bin_size=8,gene_id_column="names",aggregation_method="mean",add_to_obs=True):
-
-    try:
-        table = sdata.tables[f"square_00{bin_size}um"]
-    except (AttributeError, KeyError):
-        table = sdata
-        
-    markers_df_tmp=markers_df[markers_df[gene_id_column].isin(table.var_names)] #just to be sure the genes are present in the spatial data
-
-    if common_group_name in table.obs.columns:
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if aggregation_method=="mean":
-        compute = lambda x: np.mean(x, axis=1).values
-    elif aggregation_method=="median":
-        compute = lambda x: np.median(x, axis=1).values
-    elif aggregation_method=="sum":
-        compute = lambda x: np.sum(x, axis=1).values
-
-    # Preallocate DataFrame with zeros
-    all_spots = table.obs.index
-    all_clusters = markers_df_tmp.index.unique()
-    df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
-    #tqdm._instances.clear()
-    
-    tqdm.pandas()
-
-    # Process only spots with expression
-    for spot in tqdm(spots_with_expression, desc='Processing spots',leave=True, position=0):
-        a = {}
-        for cluster in all_clusters:
-            genes = markers_df_tmp.loc[[cluster]][gene_id_column]
-            genes = [genes] if isinstance(genes, str) else genes.values
-            group_expression = compute(table[spot, genes].to_df())
-            a[cluster] = group_expression
-        
-        # Directly assign to preallocated DataFrame
-        df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
-    
-    if add_to_obs:
-        print("Adding results to table.obs of sdata object")
-        table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
-        table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    
-    return df
-
-
 def get_proportions_on_tissue(
     sdata,
     markers_df,
@@ -465,6 +414,7 @@ def get_proportions_on_tissue(
 
     # Determine spots to process
     if common_group_name in table.obs.columns:
+        print(f"Processing spots with {common_group_name} != 0")
         spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     else:
         if verbose:
@@ -597,7 +547,7 @@ def get_proportions_on_tissue(
 
 
 
-def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=True, diagnostic=None, fold_change_threshold=2.0):
+def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0):
 
     try:
         table = sdata.tables[f"square_00{bin_size}um"]
@@ -788,11 +738,12 @@ def get_clusters_by_similarity_on_tissue(
 
     
     # Enable tqdm progress bar in pandas
-    from tqdm.auto import tqdm
+
     tqdm.pandas()
 
     # Determine which spots to process
     if common_group_name in table.obs.columns:
+        print(f"Processing spots with {common_group_name} != 0")
         spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     else:
         print("common_group_name column not found in the table, processing all spots.")
@@ -1134,59 +1085,6 @@ def add_df_to_spatialdata(sdata,df,bin_size=8):
     print("DataFrame added to SpatialData object")
     print(df.columns)
     return
-
-def apply_filtering_algorithm(data, filtering_algorithm="otsu",quantile=0.7,gaussian_components=2):
-    """
-    Applies a filtering algorithm to the input data. If the data is a DataFrame,
-    the algorithm is applied to each column separately. If the data is array-like,
-    the algorithm is applied to the entire array.
-
-    Parameters:
-        data (pd.DataFrame or array-like): The input data.
-        filtering_algorithm (str): The filtering algorithm to use ('yen', 'otsu', 'li').
-
-    Returns:
-        The filtered data with values below the threshold set to zero.
-    """
-    # Define a helper function to compute the threshold
-    def compute_threshold(values, algorithm):
-        non_zero_values = values[values != 0]
-        if len(non_zero_values) == 0:
-            return 0  # All values are zero
-        if algorithm == "otsu":
-            threshold = threshold_otsu(non_zero_values)
-        elif algorithm == "yen":
-            threshold = threshold_yen(non_zero_values)
-        elif algorithm == "li":
-            threshold = threshold_li(non_zero_values)
-        elif algorithm == "quantile":
-            threshold=np.quantile(non_zero_values,quantile)
-        elif algorithm == "gaussian":
-            gmm = GaussianMixture(n_components=gaussian_components)
-            gmm.fit(non_zero_values.reshape(-1, 1))
-            means = gmm.means_.flatten()
-            threshold = np.min(means)
-        else:
-            raise ValueError("Please provide a valid filtering algorithm: yen, otsu or li")
-        return threshold
-
-    # Check if the input is a DataFrame
-    if isinstance(data, pd.DataFrame):
-        filtered_data = data.copy()
-        for column in filtered_data.columns:
-            values = filtered_data[column].values
-            threshold = compute_threshold(values, filtering_algorithm)
-            # Set values below the threshold to zero
-            filtered_data[column] = np.where(values >= threshold, values, 0)
-        return filtered_data
-    else:
-        # Assume the input is array-like
-        values = np.asarray(data)
-        threshold = compute_threshold(values, filtering_algorithm)
-        # Set values below the threshold to zero
-        filtered_values = np.where(values >= threshold, values, 0)
-        return filtered_values
-
 
 def test_function():
     print("Easydecon loaded!")
