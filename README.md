@@ -14,7 +14,7 @@ conda activate easydecon
 You can install from PyPi:
 
 ```bash
-pip install easydecon==0.1.0a0
+pip install easydecon
 ```
 
 To install directly from GitHub using pip into the active environment, run the following command:
