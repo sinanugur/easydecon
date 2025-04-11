@@ -1,5 +1,6 @@
 # Easydecon
 
+<img src="easydecon_logo.png" alt="Logo" width=150 style="vertical-align: middle; margin-right: 10px;"/> 
 A package to analyze celltypes on high definition spatial profiling assays
 
 Installation
