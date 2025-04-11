@@ -1,6 +1,5 @@
-# Easydecon
-
-<img src="easydecon_logo.png" alt="Logo" width=150 style="vertical-align: middle; margin-right: 10px;"/> 
+<img src="easydecon_logo.jpg" alt="Logo" width=130 style="vertical-align: middle; margin-right: 10px;"/>  
+[![PyPI version](https://badge.fury.io/py/easydecon.svg)](https://badge.fury.io/py/easydecon)  
 A package to analyze celltypes on high definition spatial profiling assays
 
 Installation
