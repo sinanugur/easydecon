@@ -675,7 +675,7 @@ def get_clusters_by_similarity_on_tissue(
     #similarity_by_column="logfoldchanges",
     method="wjaccard",
     #weight_column=None,
-    add_to_obs=True,
+    add_to_obs=False,
     **kwargs,
 ):
     """
