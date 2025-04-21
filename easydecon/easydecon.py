@@ -53,8 +53,8 @@ def common_markers_gene_expression_and_filter(
     sdata: object,
     marker_genes,  # can be list, dict, or DataFrame
     common_group_name: str = "MarkerGroup",  # used if marker_genes is a list
-    group_col: str = "group",               # DF column holding group IDs
-    gene_col: str = "names",                # DF column holding marker gene names
+    celltype: str = "group",               # DF column holding group IDs
+    gene_id_column: str = "names",                # DF column holding marker gene names
     exclude_group_names: list[str] = [],
     bin_size: int = 8,
     aggregation_method: str = "sum",
@@ -148,10 +148,10 @@ def common_markers_gene_expression_and_filter(
 
     elif isinstance(marker_genes, pd.DataFrame):
         # Expect columns group_col and gene_col
-        required_cols = {group_col, gene_col}
+        required_cols = {celltype, gene_id_column}
         if not required_cols.issubset(marker_genes.columns):
             raise ValueError(
-                f"DataFrame for marker_genes must have columns: {group_col}, {gene_col}."
+                f"DataFrame for marker_genes must have columns: {celltype}, {gene_id_column}."
             )
         # Build a dict: group_name -> list_of_genes
         group_dict = {}
@@ -161,9 +161,9 @@ def common_markers_gene_expression_and_filter(
         except:
             pass
 
-        for gname, sub_df in marker_genes_tmp.groupby(group_col):
+        for gname, sub_df in marker_genes_tmp.groupby(celltype):
             # Extract unique gene names in this group
-            genes_for_gname = sub_df[gene_col].unique().tolist()
+            genes_for_gname = sub_df[gene_id_column].unique().tolist()
             group_dict[gname] = genes_for_gname
     else:
         raise TypeError(
