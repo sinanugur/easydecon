@@ -357,6 +357,7 @@ def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
     df = df[df[gene_id_column].isin(table.var_names)] #check if the var_names are present in the spatial data
     df = df[~df[celltype].isin(exclude_celltype)]
     df = df.sort_values(by=sort_by_column, ascending=ascending)
+    df = df.drop_duplicates(subset=[celltype, gene_id_column], keep='first')
     df = df.groupby(celltype).head(top_n_genes)
     print("Unique cell types detected in the dataframe:")
     print(df[celltype].unique())
