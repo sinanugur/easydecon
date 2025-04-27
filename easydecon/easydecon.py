@@ -60,7 +60,7 @@ def sparse_var(sparse_mat, axis=0):
 def common_markers_gene_expression_and_filter(
     sdata: object,
     marker_genes,  # can be list, dict, or DataFrame
-    common_group_name: str = "MarkerGroup",  # used if marker_genes is a list
+    common_group_name: str = "MarkerGroup",  # will create this column in the spatial data table, used if marker_genes is a list
     celltype: str = "group",               # DF column holding group IDs
     gene_id_column: str = "names",                # DF column holding marker gene names
     exclude_group_names: list[str] = [],
@@ -71,6 +71,7 @@ def common_markers_gene_expression_and_filter(
     num_permutations: int = 5000,
     alpha: float = 0.05,
     subsample_size: int = 20000,
+    permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for permutation
     quantile: float = 0.7, #if quantile selected
     parametric: bool = True, #if parametric, gamma or exponential distribution is used
     min_counts_quantile: float = 0,
@@ -186,7 +187,7 @@ def common_markers_gene_expression_and_filter(
         table = sdata
 
     gene_variability = sparse_var(table.X,axis=0)
-    gene_pool = table.var_names[np.argsort(gene_variability)[-int(0.2 * len(table.var_names)):]]
+    gene_pool = table.var_names[np.argsort(gene_variability)[-int(permutation_gene_pool_fraction * len(table.var_names)):]]
 
     # 2) Exclude spots
     spots_to_be_used = table.obs.index
@@ -287,6 +288,7 @@ def common_markers_gene_expression_and_filter(
                         leave=True,
                         position=0
                     ):
+                        np.random.seed(10)
                         random_genes = np.random.choice(gene_pool, size=marker_set_size, replace=False)
                         if isinstance(aggregator, str):
                             random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
