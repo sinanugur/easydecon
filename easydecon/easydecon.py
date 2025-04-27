@@ -49,6 +49,14 @@ import warnings
 #tqdm.pandas()
 logger = logging.getLogger(__name__)
 
+from scipy.stats import genpareto
+
+def sparse_var(sparse_mat, axis=0):
+    mean_sq = sparse_mat.mean(axis=axis).A1 ** 2
+    sq_mean = sparse_mat.multiply(sparse_mat).mean(axis=axis).A1
+    variance = sq_mean - mean_sq
+    return variance
+
 def common_markers_gene_expression_and_filter(
     sdata: object,
     marker_genes,  # can be list, dict, or DataFrame
@@ -135,6 +143,7 @@ def common_markers_gene_expression_and_filter(
         Columns = one per group, indexed by bin.
     """
 
+    print("new version")
     # -----------------------------------------------------------
     # 0) Convert marker_genes input to a dictionary: group -> list of genes
     # -----------------------------------------------------------
@@ -175,6 +184,9 @@ def common_markers_gene_expression_and_filter(
         table = sdata.tables[f"square_00{bin_size}um"]
     except (AttributeError, KeyError):
         table = sdata
+
+    gene_variability = sparse_var(table.X,axis=0)
+    gene_pool = table.var_names[np.argsort(gene_variability)[-int(0.2 * len(table.var_names)):]]
 
     # 2) Exclude spots
     spots_to_be_used = table.obs.index
@@ -275,7 +287,7 @@ def common_markers_gene_expression_and_filter(
                         leave=True,
                         position=0
                     ):
-                        random_genes = np.random.choice(table.var_names, size=marker_set_size, replace=False)
+                        random_genes = np.random.choice(gene_pool, size=marker_set_size, replace=False)
                         if isinstance(aggregator, str):
                             random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
                         else:
@@ -294,6 +306,10 @@ def common_markers_gene_expression_and_filter(
                         if aggregation_method != "cs":
                             shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
                             threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
+                            # Fit the Generalized Pareto Distribution
+                            #shape_hat, loc_hat, scale_hat = genpareto.fit(nonzero_null_vals, floc=0)
+                            # Compute the threshold at 1 - alpha quantile
+                            #threshold = genpareto.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
                             
                         else:
                             loc_hat, scale_hat = expon.fit(nonzero_null_vals,floc=0)
