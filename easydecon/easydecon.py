@@ -18,11 +18,9 @@ from scipy.stats import gamma
 from scipy.stats import expon
 from scipy.optimize import nnls
 from scipy.stats import zscore
+from scipy.stats import genpareto
 from tqdm.auto import tqdm
-from skimage.filters import threshold_otsu
-from skimage.filters import threshold_yen
-from skimage.filters import threshold_li
-from sklearn.mixture import GaussianMixture
+
 import logging
 
 from sklearn.linear_model import Ridge, Lasso, ElasticNet
@@ -49,13 +47,24 @@ import warnings
 #tqdm.pandas()
 logger = logging.getLogger(__name__)
 
-from scipy.stats import genpareto
 
+"""
 def sparse_var(sparse_mat, axis=0):
     mean_sq = sparse_mat.mean(axis=axis).A1 ** 2
     sq_mean = sparse_mat.multiply(sparse_mat).mean(axis=axis).A1
     variance = sq_mean - mean_sq
     return variance
+"""
+
+def sparse_var(matrix, axis=0):
+    if hasattr(matrix, 'A1'):  # Sparse matrix
+        mean_sq = matrix.mean(axis=axis).A1 ** 2
+        sq_mean = matrix.multiply(matrix).mean(axis=axis).A1
+    else:  # Dense numpy array
+        mean_sq = np.mean(matrix, axis=axis) ** 2
+        sq_mean = np.mean(matrix * matrix, axis=axis)
+    return sq_mean - mean_sq
+
 
 def common_markers_gene_expression_and_filter(
     sdata: object,
@@ -68,14 +77,14 @@ def common_markers_gene_expression_and_filter(
     aggregation_method: str = "sum",
     add_to_obs: bool = True,
     filtering_algorithm: str = "permutation",  # or "quantile"
-    num_permutations: int = 5000,
-    alpha: float = 0.05,
-    subsample_size: int = 20000,
-    permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for permutation
-    quantile: float = 0.7, #if quantile selected
+    num_permutations: int = 5000, # permutation param total number of permutations
+    alpha: float = 0.01, #significance level for the permutation-based cutoff
+    subsample_size: int = 25000, #permutation param
+    subsample_signal_quantile: float = 0.1, #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
+    permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
     parametric: bool = True, #if parametric, gamma or exponential distribution is used
-    min_counts_quantile: float = 0,
     n_subs: int = 5,                 # number of subsamples
+    quantile: float = 0.7, #if quantile selected
     **kwargs
 ) -> pd.DataFrame:
     """
@@ -86,7 +95,7 @@ def common_markers_gene_expression_and_filter(
       1) list[str]: Single group of markers -> create one column named `common_group_name`.
       2) dict[str, list[str]]: Multiple groups -> each dict key becomes a column in table.obs.
       3) pd.DataFrame: Must contain columns for groups and gene names (by default 'group' and 'names'),
-         but these can be overridden by `group_col` and `gene_col`.
+         but these can be overridden by `celltype` and `gene_id_column`.
 
     Steps (for each group):
       1) Compute aggregator (sum, mean, median, cs) for all bins over that group's marker genes.
@@ -99,43 +108,48 @@ def common_markers_gene_expression_and_filter(
     Parameters
     ----------
     sdata : object
-        Spatial data container, with sdata.tables[table_key].
+        Spatial data container or AnnData object. Expected to have sdata.tables[f"square_{bin_size:03}um"].
     marker_genes : list, dict, or pd.DataFrame
-        - list[str] for a single group of marker genes.
-        - dict[group_name -> list_of_markers] for multiple groups.
-        - pd.DataFrame with columns [group_col, gene_col].
+        Marker genes to use:
+        - list[str]: Single group of marker genes (assigned to `common_group_name`).
+        - dict[str, list[str]]: Mapping of group names to marker gene lists.
+        - pd.DataFrame: Must have columns for group and gene names (default: 'group' and 'names'), 
+          customizable via `celltype` and `gene_id_column`.
     common_group_name : str, optional
-        If marker_genes is a list, the new column name. Default "MarkerGroup".
-    group_col : str, optional
-        Column name in marker_genes DataFrame for the group identifier. Default "group".
-    gene_col : str, optional
-        Column name in marker_genes DataFrame for the gene names. Default "names".
+        Column name assigned if marker_genes is a list. Default is "MarkerGroup".
+    celltype : str, optional
+        Column name in marker_genes DataFrame for group identifier. Default is "group".
+    gene_id_column : str, optional
+        Column name in marker_genes DataFrame for gene names. Default is "names".
     exclude_group_names : list[str], optional
-        Exclude spots where table.obs[g] != 0 for g in exclude_group_names.
+        Names of groups to exclude bins where those groups are nonzero. Default is empty.
     bin_size : int, optional
-        Key for retrieving table from sdata (e.g. "square_008um").
-    filtering_algorithm : str, optional
-        "quantile" or "permutation".
+        Spatial bin size in microns (e.g., 8 means "square_008um" table). Default is 8.
     aggregation_method : str, optional
-        "sum", "mean", "median", or "cs" (composite_score).
+        How to aggregate gene expression across marker genes. One of "sum", "mean", "median", or "cs" (composite score). Default is "sum".
     add_to_obs : bool, optional
-        Whether to merge results back into table.obs.
+        Whether to add the results into the `obs` of the spatial data table. Default is True.
+    filtering_algorithm : str, optional
+        Method to determine expression cutoff. Options: "permutation" or "quantile". Default is "permutation".
     num_permutations : int, optional
-        Number of permutations (only relevant if filtering_algorithm="permutation").
+        Number of permutations for null distribution (used if filtering_algorithm="permutation"). Default is 5000.
     alpha : float, optional
-        Significance level for the permutation-based cutoff. Default 0.05.
+        Significance level (1 - alpha quantile) for thresholding using permutation. Default is 0.01.
     subsample_size : int, optional
-        How many bins to sample for the permutation-based null. Default 50000.
-    quantile : float, optional
-        Used if filtering_algorithm="quantile". Default 0.7.
-    min_counts_quantile : float, optional
-        Exclude bins below this quantile of table.obs["total_counts"] from permutation sampling.
-        Default 0 (exclude bottom).
+        Number of bins used in permutation subsampling. Default is 25000.
+    subsample_signal_quantile : float, optional
+        Quantile range for selecting moderate-expression bins before permutation. Default is 0.1.
+    permutation_gene_pool_fraction : float, optional
+        Fraction of most variable genes used as the background gene pool for permutation. Default is 0.3.
+    parametric : bool, optional
+        If True, fit a parametric distribution (Gamma or Exponential) to null scores for thresholding. Otherwise use empirical quantile. Default is True.
     n_subs : int, optional
-        Number of smaller subsamples. We derive each subset size from subsample_size // n_subs.
-        Default 5.
+        Number of smaller subsets to split the permutation into. Default is 5.
+    quantile : float, optional
+        Quantile cutoff if filtering_algorithm="quantile". Default is 0.7.
     **kwargs
-        Additional arguments if needed.
+        Additional keyword arguments (currently unused but reserved for future extensions).
+
 
     Returns
     -------
@@ -144,7 +158,6 @@ def common_markers_gene_expression_and_filter(
         Columns = one per group, indexed by bin.
     """
 
-    print("new version")
     # -----------------------------------------------------------
     # 0) Convert marker_genes input to a dictionary: group -> list of genes
     # -----------------------------------------------------------
@@ -182,7 +195,7 @@ def common_markers_gene_expression_and_filter(
 
     # 1) Retrieve the table
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
@@ -243,16 +256,10 @@ def common_markers_gene_expression_and_filter(
             threshold = non_zero_vals.quantile(quantile)
 
         elif filtering_algorithm == "permutation":
-            # Subsample spots
-            try:
-                total_counts_series = table.obs.loc[spots_to_be_used, "total_counts"]
-                # e.g., exclude bins below the 0.1 quantile (bottom 10%)
-                cutoff_value = total_counts_series.quantile(min_counts_quantile)
-                # Keep only bins above that cutoff
-                candidate_spots = total_counts_series[total_counts_series >= cutoff_value].index
-            except KeyError:
-                # No total_counts column
-                candidate_spots = spots_to_be_used
+
+            marker_expr = table[:, filtered_genes].to_df().agg(aggregator, axis=1)
+            signal_low, signal_high = marker_expr.quantile([subsample_signal_quantile, 1-subsample_signal_quantile])
+            candidate_spots = marker_expr[(marker_expr >= signal_low) & (marker_expr <= signal_high)].index
 
             if len(candidate_spots) == 0:
                 # Edge case: if everything was below cutoff
@@ -265,7 +272,7 @@ def common_markers_gene_expression_and_filter(
                 # Determine each subset size
                 subset_size_each = subsample_size // n_subs
                 remainder = subsample_size % n_subs  # if not divisible
-
+                np.random.seed(10)
                 # n_subs loops
                 for i in range(n_subs):
                     # For remainder distribution, you can let the first few subsets be bigger or smaller
@@ -274,13 +281,14 @@ def common_markers_gene_expression_and_filter(
                         current_subset_size += 1
                         remainder -= 1
                     if len(candidate_spots) > current_subset_size:
+                        
                         subset_spots = np.random.choice(candidate_spots, size=current_subset_size, replace=False)
                     else:
                         subset_spots = candidate_spots
 
                     # Build null distribution for this subset
                     all_expr_df = table[subset_spots, :].to_df()
-
+                    np.random.seed(10)
                     for _ in tqdm(
                         range(int(num_permutations/n_subs)),
                         #desc=f"Perm sub {i+1}/{n_subs} of {current_subset_size} for {group_name}",
@@ -288,8 +296,8 @@ def common_markers_gene_expression_and_filter(
                         leave=True,
                         position=0
                     ):
-                        np.random.seed(10)
                         random_genes = np.random.choice(gene_pool, size=marker_set_size, replace=False)
+
                         if isinstance(aggregator, str):
                             random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
                         else:
@@ -310,7 +318,6 @@ def common_markers_gene_expression_and_filter(
                             threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
                             # Fit the Generalized Pareto Distribution
                             #shape_hat, loc_hat, scale_hat = genpareto.fit(nonzero_null_vals, floc=0)
-                            # Compute the threshold at 1 - alpha quantile
                             #threshold = genpareto.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
                             
                         else:
@@ -343,13 +350,12 @@ def common_markers_gene_expression_and_filter(
     return result_df
 
 
-
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
 def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
                            bin_size=8,top_n_genes=60,sort_by_column="scores",
                            ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups",log2fc_min=0.25,pval_cutoff=0.05): #100
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
@@ -427,7 +433,7 @@ def get_proportions_on_tissue(
         Cell-type proportions per spatial bin.
     """
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
@@ -569,7 +575,7 @@ def get_proportions_on_tissue(
 def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0):
 
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
@@ -636,7 +642,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
@@ -649,7 +655,7 @@ def plot_assigned_clusters_from_dataframe(sdata,dataframe,sample_id,bin_size=8,t
     assign_clusters_from_df(sdata,df=dataframe,bin_size=8,results_column="plotted_clusters")
     
     sdata.pl.render_images("queried_cytassist").pl.render_shapes(
-        f"{sample_id}_square_00{bin_size}um", color="plotted_clusters",cmap=cmap,method=method,scale=scale
+        f"{sample_id}_square_{bin_size:03}um", color="plotted_clusters",cmap=cmap,method=method,scale=scale
     ).pl.show(coordinate_systems="global", title=title, legend_fontsize=legend_fontsize,figsize=figsize,dpi=dpi)
 
     return
@@ -663,15 +669,15 @@ def napari_region_assignment(sdata,key="Shapes",bin_size=8,column="napari",targe
         raise ValueError("Please provide a valid key for the shapes in the spatial data object that assigned via Napari")
         
     
-    sdata.tables[f"square_00{bin_size}um"].obs.drop(columns=column,inplace=True,errors='ignore')
+    sdata.tables[f"square_{bin_size:03}um"].obs.drop(columns=column,inplace=True,errors='ignore')
     indices_list = []
     for g in sdata[key].geometry:
-        indices=polygon_query(sdata,polygon=g,target_coordinate_system=target_coordinate_system).tables[f"square_00{bin_size}um"].obs.index
+        indices=polygon_query(sdata,polygon=g,target_coordinate_system=target_coordinate_system).tables[f"square_{bin_size:03}um"].obs.index
         indices_list.extend(indices)
     
-    df=pd.DataFrame("No", index=sdata.tables[f"square_00{bin_size}um"].obs.index, columns=[column])
+    df=pd.DataFrame("No", index=sdata.tables[f"square_{bin_size:03}um"].obs.index, columns=[column])
     df[column]=np.where(df.index.isin(set(indices_list)), 'Yes', 'No')
-    sdata.tables[f"square_00{bin_size}um"].obs=pd.merge(sdata.tables[f"square_00{bin_size}um"].obs, df, left_index=True, right_index=True)
+    sdata.tables[f"square_{bin_size:03}um"].obs=pd.merge(sdata.tables[f"square_{bin_size:03}um"].obs, df, left_index=True, right_index=True)
     return
 
 
@@ -751,7 +757,7 @@ def get_clusters_by_similarity_on_tissue(
     """
     # Try to get the appropriate table from sdata; if not present, treat sdata as the table
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
@@ -1095,7 +1101,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
 
 def add_df_to_spatialdata(sdata,df,bin_size=8):
     try:
-        table = sdata.tables[f"square_00{bin_size}um"]
+        table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
         table = sdata
 
