@@ -18,11 +18,9 @@ from scipy.stats import gamma
 from scipy.stats import expon
 from scipy.optimize import nnls
 from scipy.stats import zscore
+from scipy.stats import genpareto
 from tqdm.auto import tqdm
-from skimage.filters import threshold_otsu
-from skimage.filters import threshold_yen
-from skimage.filters import threshold_li
-from sklearn.mixture import GaussianMixture
+
 import logging
 
 from sklearn.linear_model import Ridge, Lasso, ElasticNet
@@ -49,13 +47,24 @@ import warnings
 #tqdm.pandas()
 logger = logging.getLogger(__name__)
 
-from scipy.stats import genpareto
 
+"""
 def sparse_var(sparse_mat, axis=0):
     mean_sq = sparse_mat.mean(axis=axis).A1 ** 2
     sq_mean = sparse_mat.multiply(sparse_mat).mean(axis=axis).A1
     variance = sq_mean - mean_sq
     return variance
+"""
+
+def sparse_var(matrix, axis=0):
+    if hasattr(matrix, 'A1'):  # Sparse matrix
+        mean_sq = matrix.mean(axis=axis).A1 ** 2
+        sq_mean = matrix.multiply(matrix).mean(axis=axis).A1
+    else:  # Dense numpy array
+        mean_sq = np.mean(matrix, axis=axis) ** 2
+        sq_mean = np.mean(matrix * matrix, axis=axis)
+    return sq_mean - mean_sq
+
 
 def common_markers_gene_expression_and_filter(
     sdata: object,
@@ -86,7 +95,7 @@ def common_markers_gene_expression_and_filter(
       1) list[str]: Single group of markers -> create one column named `common_group_name`.
       2) dict[str, list[str]]: Multiple groups -> each dict key becomes a column in table.obs.
       3) pd.DataFrame: Must contain columns for groups and gene names (by default 'group' and 'names'),
-         but these can be overridden by `group_col` and `gene_col`.
+         but these can be overridden by `celltype` and `gene_id_column`.
 
     Steps (for each group):
       1) Compute aggregator (sum, mean, median, cs) for all bins over that group's marker genes.
@@ -99,43 +108,48 @@ def common_markers_gene_expression_and_filter(
     Parameters
     ----------
     sdata : object
-        Spatial data container, with sdata.tables[table_key].
+        Spatial data container or AnnData object. Expected to have sdata.tables[f"square_{bin_size:03}um"].
     marker_genes : list, dict, or pd.DataFrame
-        - list[str] for a single group of marker genes.
-        - dict[group_name -> list_of_markers] for multiple groups.
-        - pd.DataFrame with columns [group_col, gene_col].
+        Marker genes to use:
+        - list[str]: Single group of marker genes (assigned to `common_group_name`).
+        - dict[str, list[str]]: Mapping of group names to marker gene lists.
+        - pd.DataFrame: Must have columns for group and gene names (default: 'group' and 'names'), 
+          customizable via `celltype` and `gene_id_column`.
     common_group_name : str, optional
-        If marker_genes is a list, the new column name. Default "MarkerGroup".
-    group_col : str, optional
-        Column name in marker_genes DataFrame for the group identifier. Default "group".
-    gene_col : str, optional
-        Column name in marker_genes DataFrame for the gene names. Default "names".
+        Column name assigned if marker_genes is a list. Default is "MarkerGroup".
+    celltype : str, optional
+        Column name in marker_genes DataFrame for group identifier. Default is "group".
+    gene_id_column : str, optional
+        Column name in marker_genes DataFrame for gene names. Default is "names".
     exclude_group_names : list[str], optional
-        Exclude spots where table.obs[g] != 0 for g in exclude_group_names.
+        Names of groups to exclude bins where those groups are nonzero. Default is empty.
     bin_size : int, optional
-        Key for retrieving table from sdata (e.g. "square_008um").
-    filtering_algorithm : str, optional
-        "quantile" or "permutation".
+        Spatial bin size in microns (e.g., 8 means "square_008um" table). Default is 8.
     aggregation_method : str, optional
-        "sum", "mean", "median", or "cs" (composite_score).
+        How to aggregate gene expression across marker genes. One of "sum", "mean", "median", or "cs" (composite score). Default is "sum".
     add_to_obs : bool, optional
-        Whether to merge results back into table.obs.
+        Whether to add the results into the `obs` of the spatial data table. Default is True.
+    filtering_algorithm : str, optional
+        Method to determine expression cutoff. Options: "permutation" or "quantile". Default is "permutation".
     num_permutations : int, optional
-        Number of permutations (only relevant if filtering_algorithm="permutation").
+        Number of permutations for null distribution (used if filtering_algorithm="permutation"). Default is 5000.
     alpha : float, optional
-        Significance level for the permutation-based cutoff. Default 0.05.
+        Significance level (1 - alpha quantile) for thresholding using permutation. Default is 0.01.
     subsample_size : int, optional
-        How many bins to sample for the permutation-based null. Default 50000.
-    quantile : float, optional
-        Used if filtering_algorithm="quantile". Default 0.7.
-    min_counts_quantile : float, optional
-        Exclude bins below this quantile of table.obs["total_counts"] from permutation sampling.
-        Default 0 (exclude bottom).
+        Number of bins used in permutation subsampling. Default is 25000.
+    subsample_signal_quantile : float, optional
+        Quantile range for selecting moderate-expression bins before permutation. Default is 0.1.
+    permutation_gene_pool_fraction : float, optional
+        Fraction of most variable genes used as the background gene pool for permutation. Default is 0.3.
+    parametric : bool, optional
+        If True, fit a parametric distribution (Gamma or Exponential) to null scores for thresholding. Otherwise use empirical quantile. Default is True.
     n_subs : int, optional
-        Number of smaller subsamples. We derive each subset size from subsample_size // n_subs.
-        Default 5.
+        Number of smaller subsets to split the permutation into. Default is 5.
+    quantile : float, optional
+        Quantile cutoff if filtering_algorithm="quantile". Default is 0.7.
     **kwargs
-        Additional arguments if needed.
+        Additional keyword arguments (currently unused but reserved for future extensions).
+
 
     Returns
     -------
