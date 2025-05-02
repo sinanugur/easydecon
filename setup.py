@@ -20,7 +20,7 @@ with open("README.md","r") as readme:
 
 setup(
     name="easydecon",
-    version="0.1.0b4",
+    version="0.1.0b5",
     packages=find_packages(exclude=('tests*','testing*')),
     long_description=long_description,
     long_description_content_type="text/markdown",
