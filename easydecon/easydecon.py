@@ -20,6 +20,7 @@ from scipy.optimize import nnls
 from scipy.stats import zscore
 from scipy.stats import genpareto
 from tqdm.auto import tqdm
+from scipy.sparse import issparse
 
 import logging
 
@@ -57,7 +58,7 @@ def sparse_var(sparse_mat, axis=0):
 """
 
 def sparse_var(matrix, axis=0):
-    if hasattr(matrix, 'A1'):  # Sparse matrix
+    if issparse(matrix):  # Sparse matrix
         mean_sq = matrix.mean(axis=axis).A1 ** 2
         sq_mean = matrix.multiply(matrix).mean(axis=axis).A1
     else:  # Dense numpy array
