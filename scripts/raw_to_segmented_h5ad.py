@@ -144,7 +144,6 @@ def main():
     ax.axis('off')
     out_pdf = f"{args.sample_id}_bincounts.pdf"
     plt.savefig(out_pdf, dpi=300)
-    plt.show()
 
     # Write output
     out_h5ad = f"{args.sample_id}_bin2cell.h5ad"
