@@ -20,8 +20,9 @@ with open("README.md","r") as readme:
 
 setup(
     name="easydecon",
-    version="0.1.0b5",
+    version="0.1.0b6",
     packages=find_packages(exclude=('tests*','testing*')),
+    scripts=["scripts/raw_to_segmented_h5ad.py"],
     long_description=long_description,
     long_description_content_type="text/markdown",
     #extras_require={"dev":["pytest>=3.7"]},
@@ -31,9 +32,6 @@ setup(
     #entry_points={
     #    'console_scripts': ['easydecon=easydecon.command_line:main'],
     #},
-    #data_files={"meta":["*.tsv"]},
-    #package_data={"workflow" : ["workflow/Snakefile","workflow/rules/*.smk"]},
-    #data_files=[("mirmachine",["meta/cms/proto/*.CM"])],
     # metadata to display on PyPI
     author="Sinan U. Umu",
     author_email="sinanugur@gmail.com",
