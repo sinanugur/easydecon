@@ -45,6 +45,7 @@ def main():
     # Create output directory
     os.makedirs(args.out_dir, exist_ok=True)
 
+    # Configure TensorFlow
     # Configure TensorFlow device
     if args.device == 'cpu':
         # Disable all GPUs
@@ -94,7 +95,7 @@ def main():
     )
     b2c.expand_labels(
         adata,
-        labels_key='labels_he_expanded',
+        labels_key='labels_he',
         expanded_labels_key="labels_he_expanded"
     )
 
