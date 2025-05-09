@@ -8,7 +8,7 @@ Installation
 It is recommended to install the package in a virtual environment or a Conda environment. To create a Conda environment, run the following command:
 
 ```bash
-conda create -n easydecon python=3.11
+conda create -n easydecon python=3.10.14
 conda activate easydecon
 ```
 
