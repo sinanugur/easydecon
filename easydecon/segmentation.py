@@ -20,11 +20,9 @@ def parse_args():
                         help="Unique identifier for the sample (e.g. SampleD1_C2237F2_hirs)")
     parser.add_argument("--binned-002", required=True,
                         help="Path to binned outputs at 0.02µm resolution")
-    parser.add_argument("--binned-008", required=False,
-                        help="Path to binned outputs at 0.08µm resolution (optional)")
-    parser.add_argument("--source-img", required=True,
+    parser.add_argument("--full-image", required=True,
                         help="Path to the raw source image (TIFF)")
-    parser.add_argument("--spaceranger-img", required=True,
+    parser.add_argument("--spaceranger-image-path", required=True,
                         help="Path to Spaceranger cropped spatial images directory")
     parser.add_argument("--mpp", type=float, default=0.5,
                         help="Microns per pixel for HE scaling (default: 0.5)")
@@ -39,15 +37,22 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def run_bin2cell_segmentation(sample_id,
+    binned_002,
+    full_image,
+    spaceranger_image_path,
+    mpp=0.5,
+    model="2D_versatile_he",
+    prob_thresh=0.20,
+    out_dir="stardist",
+    device="gpu"):
 
     # Create output directory
-    os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     # Configure TensorFlow
     # Configure TensorFlow device
-    if args.device == 'cpu':
+    if device == 'cpu':
         # Disable all GPUs
         tf.config.set_visible_devices([], 'GPU')
     else:
@@ -58,9 +63,9 @@ def main():
 
     # Read Visium data
     adata = b2c.read_visium(
-        args.binned_002,
-        source_image_path=args.source_img,
-        spaceranger_image_path=args.spaceranger_img
+        binned_002,
+        source_image_path=full_image,
+        spaceranger_image_path=spaceranger_image_path
     )
     adata.var_names_make_unique()
 
@@ -69,19 +74,19 @@ def main():
     sc.pp.filter_cells(adata, min_counts=5)
 
     # Scale HE image
-    he_path = os.path.join(args.out_dir, f"{args.sample_id}.he.tiff")
-    b2c.scaled_he_image(adata, mpp=args.mpp, save_path=he_path)
+    he_path = os.path.join(out_dir, f"{sample_id}.he.tiff")
+    b2c.scaled_he_image(adata, mpp=mpp, save_path=he_path)
 
     # Destripe
     b2c.destripe(adata)
 
     # StarDist segmentation
-    npz_path = os.path.join(args.out_dir, f"{args.sample_id}.he.npz")
+    npz_path = os.path.join(out_dir, f"{sample_id}.he.npz")
     b2c.stardist(
         image_path=he_path,
         labels_npz_path=npz_path,
-        stardist_model=args.model,
-        prob_thresh=args.prob_thresh
+        stardist_model=model,
+        prob_thresh=prob_thresh
     )
 
     # Insert and expand labels
@@ -90,7 +95,7 @@ def main():
         labels_npz_path=npz_path,
         basis="spatial",
         spatial_key="spatial_cropped",
-        mpp=args.mpp,
+        mpp=mpp,
         labels_key="labels_he"
     )
     b2c.expand_labels(
@@ -142,14 +147,29 @@ def main():
     cbar.ax.tick_params(labelcolor='black')
 
     ax.axis('off')
-    out_pdf = f"{args.sample_id}_bincounts.pdf"
+    out_pdf = f"{sample_id}_bincounts.pdf"
     plt.savefig(out_pdf, dpi=300)
 
     # Write output
-    out_h5ad = f"{args.sample_id}_bin2cell.h5ad"
+    out_h5ad = f"{sample_id}_bin2cell.h5ad"
     cdata.write_h5ad(out_h5ad)
     print(f"Outputs saved:\n  HE TIFF: {he_path}\n  Labels NPZ: {npz_path}\n  PDF plot: {out_pdf}\n  H5AD: {out_h5ad}")
+    
+    return out_h5ad
 
+def main():
+    args = parse_args()
+    run_bin2cell_segmentation(
+        sample_id=args.sample_id,
+        binned_002=args.binned_002,
+        full_image=args.full_image,
+        spaceranger_image_path=args.spaceranger_image_path,
+        mpp=args.mpp,
+        model=args.model,
+        prob_thresh=args.prob_thresh,
+        out_dir=args.out_dir,
+        device=args.device
+    )
 
 if __name__ == "__main__":
     main()

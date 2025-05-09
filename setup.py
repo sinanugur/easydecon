@@ -22,16 +22,16 @@ setup(
     name="easydecon",
     version="0.1.0b6",
     packages=find_packages(exclude=('tests*','testing*')),
-    scripts=["scripts/raw_to_segmented_h5ad.py"],
+    #scripts=["scripts/raw_to_segmented_h5ad.py"],
     long_description=long_description,
     long_description_content_type="text/markdown",
     #extras_require={"dev":["pytest>=3.7"]},
     install_requires=requirements,
     include_package_data=True,
     zip_safe=False,
-    #entry_points={
-    #    'console_scripts': ['easydecon=easydecon.command_line:main'],
-    #},
+    entry_points={
+        'console_scripts': ['run_bin2cell_segmentation=easydecon.segmentation:main'],
+    },
     # metadata to display on PyPI
     author="Sinan U. Umu",
     author_email="sinanugur@gmail.com",
