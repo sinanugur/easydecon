@@ -155,7 +155,7 @@ def run_bin2cell_segmentation(sample_id,
     cdata.write_h5ad(out_h5ad)
     print(f"Outputs saved:\n  HE TIFF: {he_path}\n  Labels NPZ: {npz_path}\n  PDF plot: {out_pdf}\n  H5AD: {out_h5ad}")
     
-    return out_h5ad
+    return cdata
 
 def main():
     args = parse_args()
