@@ -28,6 +28,10 @@ def parse_args():
                         help="Microns per pixel for HE scaling (default: 0.5)")
     parser.add_argument("--model","--stardist-model", default="2D_versatile_he",
                         help="StarDist model name (default: 2D_versatile_he)")
+    parser.add_argument("--min-cells", default=10, type=int,
+                        help="Minimum number of cells to filter genes (default: 10)")
+    parser.add_argument("--min-counts", default=5, type=int,
+                        help="Minimum number of counts to filter cells (default: 5)")
     parser.add_argument("--prob-thresh", type=float, default=0.20,
                         help="Probability threshold for StarDist (default: 0.20)")
     parser.add_argument("--out-dir", default="stardist",
@@ -44,6 +48,8 @@ def run_bin2cell_segmentation(sample_id,
     mpp=0.5,
     model="2D_versatile_he",
     prob_thresh=0.20,
+    min_cells=10,
+    min_counts=5,
     out_dir="stardist",
     device="gpu"):
 
@@ -70,8 +76,8 @@ def run_bin2cell_segmentation(sample_id,
     adata.var_names_make_unique()
 
     # Filter
-    sc.pp.filter_genes(adata, min_cells=10)
-    sc.pp.filter_cells(adata, min_counts=5)
+    sc.pp.filter_genes(adata, min_cells=min_cells)
+    sc.pp.filter_cells(adata, min_counts=min_counts)
 
     # Scale HE image
     he_path = os.path.join(out_dir, f"{sample_id}.he.tiff")
