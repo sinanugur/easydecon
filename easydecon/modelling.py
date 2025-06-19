@@ -169,7 +169,7 @@ def build_deconv_model(
     inp = layers.Input(shape=(num_genes,), name="expr_input")
     x = inp
     for i, units in enumerate(hidden_units):
-        x = layers.Dense(units,kernel_regularizer=tf.keras.regularizers.l2(1e-4), activation="relu", name=f"dense_{i}")(x)
+        x = layers.Dense(units,kernel_regularizer=tf.keras.regularizers.L1L2(l1=1e-4, l2=0), activation="relu", name=f"dense_{i}")(x)
         x = layers.BatchNormalization(name=f"bn_{i}")(x)
         x = layers.Dropout(dropout_rate, name=f"drop_{i}")(x)
     x = layers.Dense(num_celltypes, activation=None, name="dense_out")(x)
@@ -339,6 +339,8 @@ def get_proportions_deeplearning_improved(
         hidden_units=hidden_units,
         dropout_rate=dropout_rate
     )
+
+
     model.compile(
         optimizer=optimizers.Adam(learning_rate=1e-3),
         #loss=losses.MeanSquaredError(),
@@ -378,6 +380,8 @@ def get_proportions_deeplearning_improved(
     except:
         X_sp_real = sp_ref.X
     preds = model.predict(X_sp_real)  # shape = (n_spots_real, K)
+
+
     if verbose:
         print(f"Predicted proportions for {X_sp_real.shape[0]} real spots.")
 
