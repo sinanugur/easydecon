@@ -93,7 +93,7 @@ def run_bin2cell_segmentation(sample_id,
         labels_npz_path=npz_path,
         stardist_model=model,
         prob_thresh=prob_thresh,
-        channel=0
+        chanel=0
     )
 
     # Insert and expand labels
