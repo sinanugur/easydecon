@@ -126,7 +126,7 @@ def run_bin2cell_segmentation(sample_id,
     sc.pl.spatial(
         cdata,
         color=["bin_count"],
-        img_key="0.5_mpp",
+        img_key=f"{mpp}_mpp",
         basis="spatial_cropped",
         ax=ax,
         show=False,
