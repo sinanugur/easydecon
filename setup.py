@@ -20,7 +20,7 @@ with open("README.md","r") as readme:
 
 setup(
     name="easydecon",
-    version="0.1.0b7",
+    version="0.1.1b1",
     packages=find_packages(exclude=('tests*','testing*')),
     #scripts=["scripts/raw_to_segmented_h5ad.py"],
     long_description=long_description,

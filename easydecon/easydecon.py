@@ -352,9 +352,84 @@ def common_markers_gene_expression_and_filter(
 
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
-def read_markers_dataframe(sdata,filename=None,adata=None,exclude_celltype=[],
-                           bin_size=8,top_n_genes=60,sort_by_column="scores",
-                           ascending=False,gene_id_column="names",celltype="group",key="rank_genes_groups",log2fc_min=0.25,pval_cutoff=0.05): #100
+def read_markers_dataframe(sdata,
+                           filename=None,
+                           adata=None,
+                           exclude_celltype=[],
+                           bin_size=8,
+                           top_n_genes=60,
+                           sort_by_column="scores",
+                           ascending=False,
+                           gene_id_column="names",
+                           celltype="group",
+                           key="rank_genes_groups",
+                           log2fc_min=0.25,
+                           pval_cutoff=0.05):
+    """
+    Reads and processes marker genes data for spatial transcriptomics analysis.
+
+    This function can read marker genes data either from a file or from an AnnData object,
+    and processes it to create a filtered and sorted DataFrame of marker genes.
+
+    Parameters:
+    -----------
+    sdata : SpatialData object
+        The spatial data object containing the spatial transcriptomics data.
+    filename : str, optional
+        Path to the input file containing marker genes data (CSV or Excel format).
+        Required if `adata` is not provided.
+    adata : AnnData object, optional
+        AnnData object containing the marker genes data.
+        Required if `filename` is not provided.
+    exclude_celltype : list, optional
+        List of cell types to exclude from the analysis.
+        Default: []
+    bin_size : int, optional
+        Size of the spatial bin in micrometers.
+        Default: 8
+    top_n_genes : int, optional
+        Number of top genes to keep per cell type.
+        Default: 60
+    sort_by_column : str, optional
+        Column name to sort the genes by.
+        Default: "scores"
+    ascending : bool, optional
+        Whether to sort in ascending order.
+        Default: False
+    gene_id_column : str, optional
+        Column name containing gene IDs.
+        Default: "names"
+    celltype : str, optional
+        Column name containing cell type information.
+        Default: "group"
+    key : str, optional
+        Key in adata.uns where marker genes are stored.
+        Default: "rank_genes_groups"
+    log2fc_min : float, optional
+        Minimum log2 fold change threshold for gene selection.
+        Default: 0.25
+    pval_cutoff : float, optional
+        Maximum adjusted p-value threshold for gene selection.
+        Default: 0.05
+
+    Returns:
+    --------
+    pandas.DataFrame
+        Processed DataFrame containing filtered and sorted marker genes data.
+        The DataFrame includes columns for cell types, gene IDs, and scores.
+
+    Raises:
+    ------
+    ValueError
+        If neither `filename` nor `adata` is provided.
+        If invalid `adata` object is provided.
+
+    Notes:
+    -----
+    - The function automatically handles both CSV and Excel file formats.
+    - Genes are filtered based on log2 fold change and adjusted p-value thresholds.
+    - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
+    """
     try:
         table = sdata.tables[f"square_{bin_size:03}um"]
     except (AttributeError, KeyError):
@@ -574,6 +649,59 @@ def get_proportions_on_tissue(
 
 
 def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0):
+    """
+    Assigns cell clusters to spatial spots based on deconvolution results.
+
+    This function takes deconvolution results and assigns cell type clusters to each spatial spot
+    using different methods (max, zmax, or hybrid). The results are stored in the spatial data table.
+
+    Parameters:
+    -----------
+    sdata : SpatialData object
+        The spatial data object containing the spatial transcriptomics data.
+    df : pandas.DataFrame
+        DataFrame containing deconvolution results with cell type proportions.
+        Rows should correspond to spatial spots, columns to cell types.
+    bin_size : int, optional
+        Size of the spatial bin in micrometers.
+        Default: 8
+    results_column : str, optional
+        Name of the column in the table.obs where results will be stored.
+        Default: "easydecon"
+    method : str, optional
+        Method to use for cluster assignment:
+        - "max": Assigns the cell type with the highest proportion
+        - "zmax": Uses z-score normalization before finding the maximum
+        - "hybrid": Combines similarity scores and adaptive probabilities
+        Default: "max"
+    allow_multiple : bool, optional
+        Whether to allow multiple cell type assignments per spot.
+        Default: False
+    diagnostic : str, optional
+        Path to save diagnostic information (if needed).
+        Default: None
+    fold_change_threshold : float, optional
+        Threshold for fold change filtering.
+        Default: 2.0
+
+    Returns:
+    --------
+    None
+        The function modifies the input sdata object in place by adding cluster assignments
+        to the table.obs DataFrame under the specified results_column.
+
+    Raises:
+    ------
+    ValueError
+        If an invalid method is specified.
+
+    Notes:
+    -----
+    - The function automatically handles missing values and ensures proper indexing.
+    - Results are stored as categorical variables in the table.obs DataFrame.
+    - The function supports three different methods for cluster assignment, each with its own
+      characteristics and use cases.
+    """
 
     try:
         table = sdata.tables[f"square_{bin_size:03}um"]

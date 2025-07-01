@@ -2,6 +2,7 @@ scipy
 regex
 matplotlib
 pandas==2.2.2
+anndata==0.10.9
 numpy
 stardist==0.9.1
 bin2cell==0.3.0
@@ -14,9 +15,6 @@ dask==2024.11.2
 ipykernel
 squidpy
 joblib
-napari
-napari-spatialdata
-napari[pyqt6_experimental]
 xlrd==2.0.1
 tensorflow-macos==2.9.0; platform_system == "Darwin"
 tensorflow-metal==0.5.0; platform_system == "Darwin"

@@ -1,4 +1,3 @@
-
 def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
                                       bin_size=8,gene_id_column="names",aggregation_method="mean",add_to_obs=True):
 
