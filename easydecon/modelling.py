@@ -6,6 +6,11 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers, losses, regularizers
 from sklearn.model_selection import train_test_split
 
+from collections.abc import Sequence
+
+
+
+
 def simulate_pseudo_spots_simple(
     sc_ref,              # AnnData (cells × genes), already normalized + log1p
     celltype_column,     # Column in sc_ref.obs with cell‐type labels
@@ -336,7 +341,7 @@ def get_proportions_deeplearning_improved(
     model = build_deconv_model(
         num_genes=num_genes,
         num_celltypes=K,
-        hidden_units=hidden_units,
+        #hidden_units=hidden_units,
         dropout_rate=dropout_rate
     )
 
