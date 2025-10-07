@@ -690,8 +690,8 @@ def get_proportions_on_tissue(
 
     for group, gene_values in group_gene_values.items():
         ref_matrix_df.loc[gene_values.index, group] = gene_values.values
+    ref_matrix_df["others"] = 1.0  # Add "others" column
 
-    # Normalize reference matrix
     ref_matrix_df = ref_matrix_df.replace([np.inf, -np.inf], 0).fillna(0)
     ref_matrix_df = ref_matrix_df.loc[ref_matrix_df.sum(axis=1) > 0]
 
@@ -768,6 +768,7 @@ def get_proportions_on_tissue(
         results, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
     )
     
+
     others_df = pd.DataFrame(
         0, 
         index=list(set(table.obs.index) - set(spots_with_expression)), 
