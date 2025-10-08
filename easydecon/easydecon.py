@@ -358,7 +358,6 @@ def get_clusters_by_similarity_on_tissue(
     gene_id_column="names",
     #similarity_by_column="logfoldchanges",
     method="wjaccard",
-    #weight_column=None,
     add_to_obs=False,
     **kwargs,
 ):
@@ -386,16 +385,13 @@ def get_clusters_by_similarity_on_tissue(
         Name of the column in `markers_df` that contains gene IDs. 
         Default is "names".
     similarity_by_column : str, optional
-        Column in `markers_df` used to measure similarity. 
+        Column in `markers_df` used to measure similarity or weight. 
         Default is "logfoldchanges".
     method : str, optional
         Method to use for computing similarity. Supported methods include:
         "correlation", "cosine", "jaccard", "overlap", "wjaccard",
         "diagnostic", "sum", "mean", "median".
         Default is "wjaccard".
-    weight_column : str, optional
-        Name of an (optional) column for gene weights.
-        Only used in certain similarity methods. Default is None.
     add_to_obs : bool, optional
         If True, adds the resulting assignment columns to `table.obs`. 
         Default is True.
@@ -615,7 +611,7 @@ def get_proportions_on_tissue(
     method="nnls", # Options: 'nnls', 'ridge', 'lasso', 'elastic'
     normalization_method="unit",  # Options: 'unit', 'zscore',"l1"
     add_to_obs=True,
-    alpha=0.1,
+    alpha=0.01,
     l1_ratio=0.7,
     verbose=True,
 ):
@@ -1155,7 +1151,7 @@ def function_row_median(row, markers_df, **kwargs):
 
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
     gene_id_column = kwargs.get("gene_id_column","names")
-    weight_column = kwargs.get("weight_column", None)  # Name of the weight column in markers_df
+    similarity_by_column = kwargs.get("similarity_by_column", None)  # Name of the weight column in markers_df
     lambda_param = kwargs.get("lambda_param", 0.25)  # Default lambda for exponential decay
     a = {}
     # Get the genes and their expression levels from 'row' (target set)
@@ -1169,7 +1165,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         target_weights = target_genes  # Will be an empty Series
     
     # Determine if pre-calculated weights are to be used
-    use_precalculated_weights = weight_column is not None and weight_column in markers_df.columns
+    use_precalculated_weights = similarity_by_column is not None and similarity_by_column in markers_df.columns
     
     # Iterate over each cluster
     for c in markers_df.index.unique():
@@ -1178,7 +1174,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         cluster_genes = cluster_df[gene_id_column].reset_index(drop=True)
         if use_precalculated_weights:
             # Use pre-calculated weights
-            cluster_weight_values = cluster_df[weight_column].reset_index(drop=True)
+            cluster_weight_values = cluster_df[similarity_by_column].reset_index(drop=True)
             # Normalize cluster weights to range between 0 and 1
             max_weight = cluster_weight_values.max()
             if max_weight > 0:
