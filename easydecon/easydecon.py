@@ -1174,6 +1174,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         cluster_genes = cluster_df[gene_id_column].reset_index(drop=True)
         if use_precalculated_weights:
             # Use pre-calculated weights
+            print("Using pre-calculated weights")
             cluster_weight_values = cluster_df[similarity_by_column].reset_index(drop=True)
             # Normalize cluster weights to range between 0 and 1
             max_weight = cluster_weight_values.max()
