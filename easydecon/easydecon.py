@@ -398,10 +398,6 @@ def get_clusters_by_similarity_on_tissue(
     **method_kwargs : 
         Additional, method-specific parameters. For example:
         - For method="wjaccard": supply ``lambda_param``, etc.
-        - For method="cosine": supply ``penalty_param``, etc.
-        - For method="jaccard": supply ``threshold``, etc.
-        - For method="correlation": supply ``penalty_param``, etc.
-        
 
 
     Returns
@@ -973,7 +969,8 @@ def function_row_spearman(row, markers_df,**kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l)**penalty_param)
+            #sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l)**penalty_param)
+            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l))
             a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
     return a
 
