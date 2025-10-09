@@ -957,7 +957,7 @@ def process_row(row,func, **kwargs):
 def function_row_spearman(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column","names")
     similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
-    penalty_param=kwargs.get("penalty_param",0.5)
+    #penalty_param=kwargs.get("penalty_param",0.5)
 
     a = {}
     for c in markers_df.index.unique():
@@ -1148,7 +1148,7 @@ def function_row_median(row, markers_df, **kwargs):
 
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
     gene_id_column = kwargs.get("gene_id_column","names")
-    similarity_by_column = kwargs.get("similarity_by_column", None)  # Name of the weight column in markers_df
+    weight_column = kwargs.get("weight_column", None)  # Name of the weight column in markers_df
     lambda_param = kwargs.get("lambda_param", 0.25)  # Default lambda for exponential decay
     a = {}
     # Get the genes and their expression levels from 'row' (target set)
@@ -1162,7 +1162,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         target_weights = target_genes  # Will be an empty Series
     
     # Determine if pre-calculated weights are to be used
-    use_precalculated_weights = similarity_by_column is not None and similarity_by_column in markers_df.columns
+    use_precalculated_weights = weight_column is not None and weight_column in markers_df.columns
     
     # Iterate over each cluster
     for c in markers_df.index.unique():
@@ -1172,7 +1172,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         if use_precalculated_weights:
             # Use pre-calculated weights
             
-            cluster_weight_values = cluster_df[similarity_by_column].reset_index(drop=True)
+            cluster_weight_values = cluster_df[weight_column].reset_index(drop=True)
             # Normalize cluster weights to range between 0 and 1
             max_weight = cluster_weight_values.max()
             if max_weight > 0:
