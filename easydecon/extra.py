@@ -1,3 +1,5 @@
+from easydecon.easydecon import *
+
 def easydecon_workflow(
     sdata,
     markers_df,
