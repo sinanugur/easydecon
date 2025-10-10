@@ -179,7 +179,7 @@ def easydecon_workflow(
 
     print("Finished!")
     print("Posterior df and proportions can be None if the required columns or input parameters missing...")
-    return phase1_result, phase2_result, assigned_labels, posterior_df, proportions_df
+    return phase1_result, phase2_result, assigned_labels, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result, proportions_df
 
 
 
