@@ -786,8 +786,7 @@ def get_proportions_on_tissue(
     return df
 
 
-
-def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0):
+def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0, add_to_obs=True):
     """
     Assigns cell clusters to spatial spots based on deconvolution results.
 
@@ -851,9 +850,21 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
     df_filtered = df.loc[table.obs.index]
 
-    def softmax(x):
-        exp_x = np.exp(x - np.max(x))
-        return exp_x / exp_x.sum()
+    def softmax(row, **kwargs):
+        v = row.to_numpy(dtype=float)
+        # treat non-finite as very negative so they don't contribute
+        v = np.where(np.isfinite(v), v, -np.inf)
+        # if row has <2 finite or variance ~0 → uninformative
+        finite = np.isfinite(v)
+        if finite.sum() < 2 or (np.nanmax(v[finite]) - np.nanmin(v[finite]) < 1e-12):
+            return pd.Series(np.zeros_like(v, dtype=float), index=row.index)
+        m = np.nanmax(v)
+        ex = np.exp(v - m)
+        ex[~np.isfinite(ex)] = 0.0
+        s = ex.sum()
+        probs = ex / s if s > 0 else np.zeros_like(ex)
+        return pd.Series(probs, index=row.index)
+
 
     if method == "max":
         df_reindexed = df_filtered[~(df_filtered == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
@@ -863,7 +874,19 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
         df_reindexed = tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
 
     elif method == "hybrid":
-        similarity_zscores = df_filtered.apply(zscore, axis=1).fillna(0)
+        # row-wise zscore
+        row_is_all_zero_or_nan = ~np.isfinite(df_filtered).any(axis=1) | (df_filtered.replace(0, np.nan).isna().all(axis=1))
+        informative_mask = ~row_is_all_zero_or_nan
+        similarity_zscores = df_filtered[informative_mask].apply(
+            lambda r: zscore(r.to_numpy(dtype=float), nan_policy='omit'),
+            axis=1
+        )
+        similarity_zscores = pd.DataFrame(
+            np.vstack(similarity_zscores.values),
+            index=df_filtered[informative_mask].index,
+            columns=df_filtered[informative_mask].columns
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    
         adaptive_probs = similarity_zscores.apply(softmax, axis=1)
 
         def adaptive_assign(row):
@@ -884,7 +907,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
             elif allow_multiple:
                 eligible = sorted_probs[sorted_probs >= min_probability]
                 if not eligible.empty:
-                    return '|'.join(eligible.index.tolist())
+                    return ';'.join(eligible.index.tolist())
                 else:
                     return np.nan
             else:
@@ -899,7 +922,21 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
     else:
         raise ValueError("Please provide a valid method: max, zmax, or hybrid")
 
-    table.obs = pd.merge(table.obs, df_reindexed, left_index=True, right_index=True, how="left")
+
+    if allow_multiple and method == "hybrid":
+        tmp = pd.DataFrame()
+        tmp[[f"{results_column}", f"{results_column}_second", f"{results_column}_third"]] = df_reindexed[results_column].str.split(";",n=2,expand=True)
+
+        df_reindexed = tmp.astype('category').reindex(table.obs.index)
+
+    if add_to_obs:
+        print("Adding results to table.obs of sdata object")
+        table.obs.drop(
+            columns=df_reindexed.columns,
+            inplace=True, errors='ignore'
+        )
+
+        table.obs = pd.merge(table.obs, df_reindexed, left_index=True, right_index=True, how="left")
 
     if diagnostic is not None:
         for r in table.obs[[results_column]].itertuples(index=True, name='Pandas'):
@@ -907,6 +944,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
                 table.obs.at[r.Index, results_column] = getattr(r, results_column)
 
     return df_reindexed
+
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
     try:
