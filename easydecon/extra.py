@@ -35,7 +35,7 @@ def easydecon_workflow(
     epsilon: float = 1e-12,               # numerical guard
     # === Final assignment: assign_clusters_from_df ===
     results_column: str = "easydecon",
-    assign_method: str = "max",           # {"max","zmax","hybrid"} per your implementation
+    assign_method: str = "max",           # {"max","hybrid","zmax"} per your implementation
     allow_multiple: bool = False,
     diagnostic=None,
     fold_change_threshold: float = 2.0,
