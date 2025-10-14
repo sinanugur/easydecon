@@ -26,6 +26,11 @@ import logging
 
 from sklearn.linear_model import Ridge, Lasso, ElasticNet
 
+try:
+    from easydecon.extra import *
+except ImportError:
+    pass 
+
 def _suppress_warnings_in_worker():
     """ Suppress warnings and logging inside joblib workers. """
     logging.getLogger().setLevel(logging.CRITICAL)
@@ -350,6 +355,139 @@ def common_markers_gene_expression_and_filter(
 
     return result_df
 
+def get_clusters_by_similarity_on_tissue(
+    sdata,
+    markers_df,
+    common_group_name=None,
+    bin_size=8,
+    gene_id_column="names",
+    #similarity_by_column="logfoldchanges",
+    method="wjaccard",
+    add_to_obs=False,
+    **kwargs,
+):
+    """
+    Compute cluster assignments based on a chosen similarity method.
+
+    Parameters
+    ----------
+    sdata : AnnData-like object
+        Spatial (or single-cell) data containing expression matrices.
+        It is expected to have 'tables' attribute with keys like "square_00Xum",
+        or simply be treated as a table if the key doesn't exist.
+    markers_df : pd.DataFrame
+        DataFrame containing marker genes for each cluster.
+        Rows typically represent clusters, columns represent information 
+        about each gene (e.g., logfoldchanges, names, etc.).
+    common_group_name : str, optional
+        Name of a column in `table.obs` specifying spots to process. 
+        If found, only spots where `common_group_name != 0` are processed.
+        Otherwise, all spots are processed. Default is None.
+    bin_size : int, optional
+        Determines the bin size (like "square_008um") for looking up the table 
+        in `sdata.tables`. Default is 8.
+    gene_id_column : str, optional
+        Name of the column in `markers_df` that contains gene IDs. 
+        Default is "names".
+    similarity_by_column : str, optional
+        Column in `markers_df` used to measure similarity or weight. 
+        Default is "logfoldchanges".
+    method : str, optional
+        Method to use for computing similarity. Supported methods include:
+        "correlation", "cosine", "jaccard", "overlap", "wjaccard",
+        "diagnostic", "sum", "mean", "median".
+        Default is "wjaccard".
+    add_to_obs : bool, optional
+        If True, adds the resulting assignment columns to `table.obs`. 
+        Default is True.
+    **method_kwargs : 
+        Additional, method-specific parameters. For example:
+        - For method="wjaccard": supply ``lambda_param``, etc.
+
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame whose index matches `table.obs.index` with cluster 
+        assignment columns (or other metrics) computed by the specified method.
+    """
+    # Try to get the appropriate table from sdata; if not present, treat sdata as the table
+    try:
+        table = sdata.tables[f"square_{bin_size:03}um"]
+    except (AttributeError, KeyError):
+        table = sdata
+
+    
+    # Enable tqdm progress bar in pandas
+
+    tqdm.pandas()
+
+    # Determine which spots to process
+    if common_group_name in table.obs.columns:
+        print(f"Processing spots with {common_group_name} != 0")
+        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
+    else:
+        print("common_group_name column not found in the table, processing all spots.")
+        spots_with_expression = table.obs.index
+
+    # Select similarity function based on method
+    similarity_methods = {
+        "correlation": function_row_spearman,
+        "cosine": function_row_cosine,
+        "jaccard": function_row_jaccard,
+        "overlap": function_row_overlap,
+        "wjaccard": function_row_weighted_jaccard,
+        "diagnostic": function_row_diagnostic,
+        "sum": function_row_sum,
+        "mean": function_row_mean,
+        "median": function_row_median,
+        "euclidean": function_row_euclidean
+    }
+    if method not in similarity_methods:
+        raise ValueError(
+            "Invalid method. Choose from: correlation, cosine, jaccard, overlap, "
+            "wjaccard, diagnostic, sum, mean, median"
+        )
+
+    func = similarity_methods[method]
+    # Show parallelization info
+    #from .config import config  # Import inside function to prevent issues with joblib reloading
+    print("Number of threads used:", config.n_jobs)
+    print("Batch size:", config.batch_size)
+
+    # Run computations in parallel
+    results = Parallel(
+        n_jobs=config.n_jobs,
+        backend="loky",  # Ensure workers do not inherit unnecessary imports
+    )(
+        delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
+        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression),leave=True, position=0)
+    )
+
+
+    # Convert results to a DataFrame
+    result_df = pd.DataFrame(results)
+    result_df.set_index("Index", inplace=True)
+    result_df = result_df["assigned_cluster"].apply(pd.Series)
+
+    # For spots not processed (e.g., excluded by common_group_name != 0)
+    # fill with zeros or NaNs, depending on your needs
+    others_df = pd.DataFrame(
+        0, 
+        index=list(set(table.obs.index) - set(spots_with_expression)), 
+        columns=result_df.columns
+    )
+    df = pd.concat([result_df, others_df])
+
+
+    # Optionally merge back into table.obs
+    if method != "diagnostic" or add_to_obs:
+        print("Adding results to table.obs of sdata object")
+        table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
+        table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
+
+    return df
+
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
 def read_markers_dataframe(sdata,
@@ -474,7 +612,7 @@ def get_proportions_on_tissue(
     method="nnls", # Options: 'nnls', 'ridge', 'lasso', 'elastic'
     normalization_method="unit",  # Options: 'unit', 'zscore',"l1"
     add_to_obs=True,
-    alpha=0.1,
+    alpha=0.01,
     l1_ratio=0.7,
     verbose=True,
 ):
@@ -549,8 +687,8 @@ def get_proportions_on_tissue(
 
     for group, gene_values in group_gene_values.items():
         ref_matrix_df.loc[gene_values.index, group] = gene_values.values
+    ref_matrix_df["others"] = 1.0  # Add "others" column
 
-    # Normalize reference matrix
     ref_matrix_df = ref_matrix_df.replace([np.inf, -np.inf], 0).fillna(0)
     ref_matrix_df = ref_matrix_df.loc[ref_matrix_df.sum(axis=1) > 0]
 
@@ -627,6 +765,7 @@ def get_proportions_on_tissue(
         results, index=spatial_expr.columns, columns=ref_matrix_df.columns.values
     )
     
+
     others_df = pd.DataFrame(
         0, 
         index=list(set(table.obs.index) - set(spots_with_expression)), 
@@ -647,8 +786,7 @@ def get_proportions_on_tissue(
     return df
 
 
-
-def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0):
+def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0, add_to_obs=True):
     """
     Assigns cell clusters to spatial spots based on deconvolution results.
 
@@ -712,9 +850,21 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
     df_filtered = df.loc[table.obs.index]
 
-    def softmax(x):
-        exp_x = np.exp(x - np.max(x))
-        return exp_x / exp_x.sum()
+    def softmax(row, **kwargs):
+        v = row.to_numpy(dtype=float)
+        # treat non-finite as very negative so they don't contribute
+        v = np.where(np.isfinite(v), v, -np.inf)
+        # if row has <2 finite or variance ~0 → uninformative
+        finite = np.isfinite(v)
+        if finite.sum() < 2 or (np.nanmax(v[finite]) - np.nanmin(v[finite]) < 1e-12):
+            return pd.Series(np.zeros_like(v, dtype=float), index=row.index)
+        m = np.nanmax(v)
+        ex = np.exp(v - m)
+        ex[~np.isfinite(ex)] = 0.0
+        s = ex.sum()
+        probs = ex / s if s > 0 else np.zeros_like(ex)
+        return pd.Series(probs, index=row.index)
+
 
     if method == "max":
         df_reindexed = df_filtered[~(df_filtered == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
@@ -724,7 +874,19 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
         df_reindexed = tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
 
     elif method == "hybrid":
-        similarity_zscores = df_filtered.apply(zscore, axis=1).fillna(0)
+        # row-wise zscore
+        row_is_all_zero_or_nan = ~np.isfinite(df_filtered).any(axis=1) | (df_filtered.replace(0, np.nan).isna().all(axis=1))
+        informative_mask = ~row_is_all_zero_or_nan
+        similarity_zscores = df_filtered[informative_mask].apply(
+            lambda r: zscore(r.to_numpy(dtype=float), nan_policy='omit'),
+            axis=1
+        )
+        similarity_zscores = pd.DataFrame(
+            np.vstack(similarity_zscores.values),
+            index=df_filtered[informative_mask].index,
+            columns=df_filtered[informative_mask].columns
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    
         adaptive_probs = similarity_zscores.apply(softmax, axis=1)
 
         def adaptive_assign(row):
@@ -745,7 +907,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
             elif allow_multiple:
                 eligible = sorted_probs[sorted_probs >= min_probability]
                 if not eligible.empty:
-                    return '|'.join(eligible.index.tolist())
+                    return ';'.join(eligible.index.tolist())
                 else:
                     return np.nan
             else:
@@ -760,7 +922,21 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
     else:
         raise ValueError("Please provide a valid method: max, zmax, or hybrid")
 
-    table.obs = pd.merge(table.obs, df_reindexed, left_index=True, right_index=True, how="left")
+
+    if allow_multiple and method == "hybrid":
+        tmp = pd.DataFrame()
+        tmp[[f"{results_column}", f"{results_column}_second", f"{results_column}_third"]] = df_reindexed[results_column].str.split(";",n=2,expand=True)
+
+        df_reindexed = tmp.astype('category').reindex(table.obs.index)
+
+    if add_to_obs:
+        print("Adding results to table.obs of sdata object")
+        table.obs.drop(
+            columns=df_reindexed.columns,
+            inplace=True, errors='ignore'
+        )
+
+        table.obs = pd.merge(table.obs, df_reindexed, left_index=True, right_index=True, how="left")
 
     if diagnostic is not None:
         for r in table.obs[[results_column]].itertuples(index=True, name='Pandas'):
@@ -768,6 +944,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
                 table.obs.at[r.Index, results_column] = getattr(r, results_column)
 
     return df_reindexed
+
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
     try:
@@ -820,152 +997,10 @@ def process_row(row,func, **kwargs):
 
 
 
-def get_clusters_by_similarity_on_tissue(
-    sdata,
-    markers_df,
-    common_group_name=None,
-    bin_size=8,
-    gene_id_column="names",
-    #similarity_by_column="logfoldchanges",
-    method="wjaccard",
-    #weight_column=None,
-    add_to_obs=False,
-    **kwargs,
-):
-    """
-    Compute cluster assignments based on a chosen similarity method.
-
-    Parameters
-    ----------
-    sdata : AnnData-like object
-        Spatial (or single-cell) data containing expression matrices.
-        It is expected to have 'tables' attribute with keys like "square_00Xum",
-        or simply be treated as a table if the key doesn't exist.
-    markers_df : pd.DataFrame
-        DataFrame containing marker genes for each cluster.
-        Rows typically represent clusters, columns represent information 
-        about each gene (e.g., logfoldchanges, names, etc.).
-    common_group_name : str, optional
-        Name of a column in `table.obs` specifying spots to process. 
-        If found, only spots where `common_group_name != 0` are processed.
-        Otherwise, all spots are processed. Default is None.
-    bin_size : int, optional
-        Determines the bin size (like "square_008um") for looking up the table 
-        in `sdata.tables`. Default is 8.
-    gene_id_column : str, optional
-        Name of the column in `markers_df` that contains gene IDs. 
-        Default is "names".
-    similarity_by_column : str, optional
-        Column in `markers_df` used to measure similarity. 
-        Default is "logfoldchanges".
-    method : str, optional
-        Method to use for computing similarity. Supported methods include:
-        "correlation", "cosine", "jaccard", "overlap", "wjaccard",
-        "diagnostic", "sum", "mean", "median".
-        Default is "wjaccard".
-    weight_column : str, optional
-        Name of an (optional) column for gene weights.
-        Only used in certain similarity methods. Default is None.
-    add_to_obs : bool, optional
-        If True, adds the resulting assignment columns to `table.obs`. 
-        Default is True.
-    **method_kwargs : 
-        Additional, method-specific parameters. For example:
-        - For method="wjaccard": supply ``lambda_param``, etc.
-        - For method="cosine": supply ``penalty_param``, etc.
-        - For method="jaccard": supply ``threshold``, etc.
-        - For method="correlation": supply ``penalty_param``, etc.
-        
-
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame whose index matches `table.obs.index` with cluster 
-        assignment columns (or other metrics) computed by the specified method.
-    """
-    # Try to get the appropriate table from sdata; if not present, treat sdata as the table
-    try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
-    except (AttributeError, KeyError):
-        table = sdata
-
-    
-    # Enable tqdm progress bar in pandas
-
-    tqdm.pandas()
-
-    # Determine which spots to process
-    if common_group_name in table.obs.columns:
-        print(f"Processing spots with {common_group_name} != 0")
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    # Select similarity function based on method
-    similarity_methods = {
-        "correlation": function_row_spearman,
-        "cosine": function_row_cosine,
-        "jaccard": function_row_jaccard,
-        "overlap": function_row_overlap,
-        "wjaccard": function_row_weighted_jaccard,
-        "diagnostic": function_row_diagnostic,
-        "sum": function_row_sum,
-        "mean": function_row_mean,
-        "median": function_row_median,
-        "euclidean": function_row_euclidean
-    }
-    if method not in similarity_methods:
-        raise ValueError(
-            "Invalid method. Choose from: correlation, cosine, jaccard, overlap, "
-            "wjaccard, diagnostic, sum, mean, median"
-        )
-
-    func = similarity_methods[method]
-    # Show parallelization info
-    #from .config import config  # Import inside function to prevent issues with joblib reloading
-    print("Number of threads used:", config.n_jobs)
-    print("Batch size:", config.batch_size)
-
-    # Run computations in parallel
-    results = Parallel(
-        n_jobs=config.n_jobs,
-        backend="loky",  # Ensure workers do not inherit unnecessary imports
-    )(
-        delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
-        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression),leave=True, position=0)
-    )
-
-
-    # Convert results to a DataFrame
-    result_df = pd.DataFrame(results)
-    result_df.set_index("Index", inplace=True)
-    result_df = result_df["assigned_cluster"].apply(pd.Series)
-
-    # For spots not processed (e.g., excluded by common_group_name != 0)
-    # fill with zeros or NaNs, depending on your needs
-    others_df = pd.DataFrame(
-        0, 
-        index=list(set(table.obs.index) - set(spots_with_expression)), 
-        columns=result_df.columns
-    )
-    df = pd.concat([result_df, others_df])
-
-
-    # Optionally merge back into table.obs
-    if method != "diagnostic" or add_to_obs:
-        print("Adding results to table.obs of sdata object")
-        table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
-        table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
-
-    return df
-
-
 def function_row_spearman(row, markers_df,**kwargs):
     gene_id_column=kwargs.get("gene_id_column","names")
     similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
-    penalty_param=kwargs.get("penalty_param",0.5)
+    #penalty_param=kwargs.get("penalty_param",0.5)
 
     a = {}
     for c in markers_df.index.unique():
@@ -977,7 +1012,8 @@ def function_row_spearman(row, markers_df,**kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l)**penalty_param)
+            #sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l)**penalty_param)
+            sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l))
             a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
     return a
 
@@ -1178,6 +1214,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         cluster_genes = cluster_df[gene_id_column].reset_index(drop=True)
         if use_precalculated_weights:
             # Use pre-calculated weights
+            
             cluster_weight_values = cluster_df[weight_column].reset_index(drop=True)
             # Normalize cluster weights to range between 0 and 1
             max_weight = cluster_weight_values.max()
