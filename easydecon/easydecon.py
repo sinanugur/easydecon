@@ -26,10 +26,6 @@ import logging
 
 from sklearn.linear_model import Ridge, Lasso, ElasticNet
 
-try:
-    from easydecon.extra import *
-except ImportError:
-    pass 
 
 def _suppress_warnings_in_worker():
     """ Suppress warnings and logging inside joblib workers. """
