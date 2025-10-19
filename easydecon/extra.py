@@ -1,4 +1,4 @@
-from easydecon.easydecon import *
+from .easydecon import *
 
 def easydecon_workflow(
     sdata,
