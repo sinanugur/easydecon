@@ -28,6 +28,28 @@ Overview
 --------
 <img src="easydecon-overview.png" alt="Worfklow Overview"/>
 
+Absolute Minimal Example
+---------------
+```python
+from easydecon.easydecon import *
+from easydecon.config import *
+from easydecon.extra import *
+
+#read your DESeq table into a markers_df
+#sdata is your VisiumHD file in SpatialData format or segmented AnnData object, assumed you QC and etc.
+markers_df=read_markers_dataframe(sdata,filename="scanpy_deseq_table.csv")
+
+#run easydecon
+ph1, ph2, assigned_labels, posterior_df, proportions_df= easydecon_workflow(sdata,markers_df=markers_df)
+
+#or setting prior genes
+ph1, ph2, assigned_labels, posterior_df, proportions_df= easydecon_workflow(sdata,markers_df=markers_df,marker_genes=["gene1","gene2","gene3"])
+
+`assigned_labels` will be added to sdata.obs and contain the celltype assignments
+`proportions_df` will contain the estimated proportions for each celltype
+
+```
+
 Usage and Documentation
 -----------------------
 You may find our example notebooks in the `notebooks` folder.
