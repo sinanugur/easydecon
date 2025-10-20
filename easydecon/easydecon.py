@@ -9,8 +9,17 @@ except ImportError:
     import pandas as pd
     #print("fireducks.pandas not found. Falling back to standard pandas.")
 
-import spatialdata as sd
-import spatialdata_io
+try:
+    import spatialdata as sd
+    import spatialdata_io
+    from spatialdata import get_extent
+    from spatialdata import bounding_box_query
+    from spatialdata import match_element_to_table
+    import spatialdata_plot
+except ImportError:
+    print("SpatialData not found. You may want to install SpatialData (https://spatialdata.readthedocs.io/en/latest/)")
+    pass
+
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 from scipy.spatial.distance import euclidean
