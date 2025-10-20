@@ -9,7 +9,7 @@ except ImportError:
     import pandas as pd
     #print("fireducks.pandas not found. Falling back to standard pandas.")
 
-import spatialdata as sp
+import spatialdata as sd
 import spatialdata_io
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
@@ -42,21 +42,11 @@ from .config import config
 from joblib import Parallel, delayed
 
 from spatialdata import polygon_query
-import warnings
 
 
 # Ensure that the progress_apply method is available
 #tqdm.pandas()
 logger = logging.getLogger(__name__)
-
-
-"""
-def sparse_var(sparse_mat, axis=0):
-    mean_sq = sparse_mat.mean(axis=axis).A1 ** 2
-    sq_mean = sparse_mat.multiply(sparse_mat).mean(axis=axis).A1
-    variance = sq_mean - mean_sq
-    return variance
-"""
 
 def sparse_var(matrix, axis=0):
     if issparse(matrix):  # Sparse matrix

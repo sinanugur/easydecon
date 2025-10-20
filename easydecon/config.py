@@ -1,3 +1,4 @@
+
 class Config:
     n_jobs = 5  # Default value
     batch_size = 1000  # Default value    
