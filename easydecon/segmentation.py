@@ -38,6 +38,8 @@ def parse_args():
                         help="Directory to save stardist and outputs (default: ./stardist)")
     parser.add_argument("--device", choices=["cpu", "gpu"], default="gpu",
                         help="Device to use for TensorFlow: 'gpu' or 'cpu' (default: gpu)")
+    parser.add_argument("--nms-thresh", type=float, default=0.3,
+                        help="NMS threshold for StarDist (default: 0.3)")
     return parser.parse_args()
 
 
@@ -48,6 +50,7 @@ def run_bin2cell_segmentation(sample_id,
     mpp=0.5,
     model="2D_versatile_he",
     prob_thresh=0.20,
+    nms_thresh=0.3,
     min_cells=10,
     min_counts=5,
     out_dir="stardist",
@@ -92,7 +95,8 @@ def run_bin2cell_segmentation(sample_id,
         image_path=he_path,
         labels_npz_path=npz_path,
         stardist_model=model,
-        prob_thresh=prob_thresh
+        prob_thresh=prob_thresh,
+        nms_thresh=nms_thresh,
     )
 
     # Insert and expand labels
@@ -173,6 +177,7 @@ def main():
         mpp=args.mpp,
         model=args.model,
         prob_thresh=args.prob_thresh,
+        nms_thresh=args.nms_thresh,
         out_dir=args.out_dir,
         device=args.device
     )

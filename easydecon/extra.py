@@ -12,9 +12,10 @@ def easydecon_workflow(
     # === Phase 1 (priors): common_markers_gene_expression_and_filter ===
     aggregation_method: str = "sum",      # {"sum","mean","median"} supported by your helper funcs
     filtering_algorithm: str = "permutation",  # {"permutation","quantile"}
-    num_permutations: int = 5000,         # permutation
+    num_permutations: int = 5000,         # number of permutations
+    parametric: bool = True,              # parametric or empirical quantile
     alpha: float = 0.01,                  # permutation cutoff level
-    subsample_size: int = 25000,          # permutation
+    subsample_size: int = 25000,          # subsample size for permutation
     subsample_signal_quantile: float = 0.1,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
     permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
     n_subs: int = 5,                      # permutation: number of subsamples
@@ -62,6 +63,7 @@ def easydecon_workflow(
         permutation_gene_pool_fraction=permutation_gene_pool_fraction,
         n_subs=n_subs,
         quantile=quantile,
+        parametric=parametric
     )
 
     if not isinstance(phase1_result, pd.DataFrame):
