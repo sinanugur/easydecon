@@ -196,9 +196,13 @@ def common_markers_gene_expression_and_filter(
 
     # 1) Retrieve the table
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
 
     gene_variability = sparse_var(table.X,axis=0)
     gene_pool = table.var_names[np.argsort(gene_variability)[-int(permutation_gene_pool_fraction * len(table.var_names)):]]
@@ -210,6 +214,22 @@ def common_markers_gene_expression_and_filter(
             if g in table.obs.columns:
                 spots_excluded = table.obs[table.obs[g] != 0].index
                 spots_to_be_used = spots_to_be_used.difference(spots_excluded)
+
+    #patch for Xenium, may be deleted
+    if isinstance(spots_to_be_used, (list, tuple, set)):
+        spots_to_be_used = pd.Index(spots_to_be_used)
+    elif isinstance(spots_to_be_used, np.ndarray):
+        spots_to_be_used = pd.Index(spots_to_be_used)
+    # If it's a boolean array/Series, use it directly as a mask
+    if getattr(spots_to_be_used, "dtype", None) is not None and spots_to_be_used.dtype == bool:
+        obs_mask = np.asarray(spots_to_be_used, dtype=bool)
+    else:
+        # treat as labels; if you actually meant positions, change to `.iloc` below
+        obs_mask = table.obs_names.isin(spots_to_be_used)
+
+    
+
+
 
     # Prepare a final DataFrame to collect group results
     result_df = pd.DataFrame(index=spots_to_be_used)
@@ -239,9 +259,10 @@ def common_markers_gene_expression_and_filter(
             # We'll create a column of all zeros
             result_df[group_name] = 0
             continue
-
+        var_mask = table.var_names.isin(filtered_genes)
         # Retrieve expression for the selected spots & genes
-        expr_matrix = table[spots_to_be_used, filtered_genes].to_df()
+        #expr_matrix = table[spots_to_be_used, filtered_genes].to_df()
+        expr_matrix = table[obs_mask, var_mask].to_df()
 
         if isinstance(aggregator, str):
             aggregated_vals = expr_matrix.agg(aggregator, axis=1)
@@ -408,9 +429,13 @@ def get_clusters_by_similarity_on_tissue(
     """
     # Try to get the appropriate table from sdata; if not present, treat sdata as the table
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
 
     
     # Enable tqdm progress bar in pandas
@@ -564,9 +589,14 @@ def read_markers_dataframe(sdata,
     - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
     """
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
+
 
     if adata is None:
         if filename is None:
@@ -642,9 +672,13 @@ def get_proportions_on_tissue(
         Cell-type proportions per spatial bin.
     """
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
 
     # Determine spots to process
     if common_group_name in table.obs.columns:
@@ -837,9 +871,13 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
     """
 
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
 
     table.obs.drop(columns=[results_column], inplace=True, errors='ignore')
 
@@ -943,9 +981,13 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
 
     table.obs.drop(columns=[temp_column],inplace=True,errors='ignore')
     #table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
@@ -1262,9 +1304,13 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
 
 def add_df_to_spatialdata(sdata,df,bin_size=8):
     try:
-        table = sdata.tables[f"square_{bin_size:03}um"]
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
     except (AttributeError, KeyError):
-        table = sdata
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
 
     table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
