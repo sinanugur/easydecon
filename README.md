@@ -57,3 +57,13 @@ You may find our example notebooks in the `notebooks` folder.
 - Demo notebook for a single-cell Anndata object (demo)[https://github.com/sinanugur/easydecon/blob/main/notebooks/demo.ipynb]
 - Demo notebook for macrophage markers (demo_macrophage)[https://github.com/sinanugur/easydecon/blob/main/notebooks/demo_macrophage.ipynb]
 - Minimal example notebook (minimal)[https://github.com/sinanugur/easydecon/blob/main/notebooks/demo_minimal_example.ipynb]
+
+Read the Docs
+-------------
+A draft Sphinx configuration is included for hosting API documentation on Read
+the Docs. Build the site locally with:
+
+```bash
+pip install -r docs/requirements.txt
+sphinx-build -b html docs docs/_build/html
+```
