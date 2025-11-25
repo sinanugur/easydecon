@@ -37,7 +37,13 @@ autodoc_mock_imports = [
     'scipy',
     'tqdm',
     'sklearn',
+    # NEW:
+    'joblib',
+    'matplotlib',
+    'matplotlib.pyplot',
+    'squidpy',
 ]
+
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
