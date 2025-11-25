@@ -37,11 +37,12 @@ autodoc_mock_imports = [
     'scipy',
     'tqdm',
     'sklearn',
-    # NEW:
     'joblib',
     'matplotlib',
     'matplotlib.pyplot',
     'squidpy',
+    'tensorflow',
+    'bin2cell'
 ]
 
 

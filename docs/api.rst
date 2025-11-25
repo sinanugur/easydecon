@@ -25,13 +25,6 @@ Segmentation Utilities
    :undoc-members:
    :show-inheritance:
 
-Modelling Utilities
--------------------
-
-.. automodule:: easydecon.modelling
-   :members:
-   :undoc-members:
-   :show-inheritance:
 
 Extra Utilities
 ---------------
