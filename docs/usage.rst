@@ -4,32 +4,43 @@ Getting Started
 Installation
 ------------
 
-Install ``easydecon`` from source to access the latest features::
+It is recommended to install the package in a virtual environment or a Conda environment. To create a Conda environment, run the following command::
 
-   git clone https://github.com/your-org/easydecon.git
-   cd easydecon
-   pip install -e .[dev]
+    conda create -n easydecon python=3.10.14
+    conda activate easydecon
 
-If you plan to build the documentation locally, install the optional docs
-requirements::
+You can install from PyPi::
 
-   pip install -r docs/requirements.txt
+    pip install easydecon
 
-Quick Usage
------------
+To install directly from GitHub using pip into the active environment, run the
+following command::
 
-Once installed, import the package to access the high-level utilities::
+    pip install git+https://github.com/sinanugur/easydecon.git
 
-   import easydecon
-   from easydecon.easydecon import common_markers_gene_expression_and_filter
 
-Refer to the :doc:`api` section for full details on the available modules and
-functions.
+Absolute Minimal Usage
+----------------------
 
-Read the Docs Configuration
----------------------------
+.. code-block:: python
 
-This repository includes a minimal ``.readthedocs.yaml`` configuration so the
-site can be built on `Read the Docs <https://readthedocs.org/>`_. The build uses
-Sphinx with the Read the Docs theme and mocks heavy scientific dependencies to
-keep API generation lightweight.
+    from easydecon.easydecon import *
+    from easydecon.config import *
+    from easydecon.extra import *
+
+    # read your DESeq table into a markers_df
+    # sdata is your VisiumHD file in SpatialData format or segmented AnnData object,
+    # assumed you QC and etc.
+    markers_df = read_markers_dataframe(sdata, filename="scanpy_deseq_table.csv")
+
+    # run easydecon
+    ph1, ph2, assigned_labels, posterior_df, proportions_df = easydecon_workflow(
+        sdata, markers_df=markers_df
+    )
+
+    # or setting prior genes
+    ph1, ph2, assigned_labels, posterior_df, proportions_df = easydecon_workflow(
+        sdata,
+        markers_df=markers_df,
+        marker_genes=["gene1", "gene2", "gene3"],
+    )
