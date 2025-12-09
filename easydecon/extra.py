@@ -32,8 +32,14 @@ def easydecon_workflow(
     l1_ratio: float = 0.7,                # L1/L2 ratio for L1+L2 regularization
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
-    softmax_tau: float = 1.0,             # softmax temperature
-    epsilon: float = 1e-12,               # numerical guard
+    softmax_tau: float = 1.0,                 # softmax temperature
+    epsilon: float = 1e-12,                   # numerical guard
+    # === Bayesian combination weights ===
+    prior_weight: float = 1.0,                # weight for phase 1 priors
+    likelihood_weight: float = 1.0,           # weight for phase 2 likelihoods
+    # === Optional presence gating by priors ===
+    apply_prior_presence_mask: bool = False,  # if True, priors gate likelihoods
+    prior_presence_threshold: float = 0.0,    # threshold on priors for presence mask
     # === Final assignment: assign_clusters_from_df ===
     results_column: str = "easydecon",
     assign_method: str = "max",           # {"max","hybrid","zmax"} per your implementation
@@ -133,14 +139,31 @@ def easydecon_workflow(
         priors_aligned = priors_aligned.loc[common_spots]
         likelihoods_aligned = likelihoods_aligned.loc[common_spots]
 
-        posterior_unnorm = priors_aligned * likelihoods_aligned
+        # Optional: use priors as a presence/absence gate on BOTH priors and likelihoods
+        if apply_prior_presence_mask:
+            presence_mask = (priors_aligned > prior_presence_threshold).astype(float)
+            priors_aligned = priors_aligned * presence_mask
+            likelihoods_aligned = likelihoods_aligned * presence_mask
+
+        # Guard against exact zeros before exponentiation,
+        # but keep true zeros from masking as zeros:
+        priors_safe = priors_aligned.replace(0, np.nan).clip(lower=epsilon).fillna(0)
+        likelihoods_safe = likelihoods_aligned.replace(0, np.nan).clip(lower=epsilon).fillna(0)
+
+        posterior_unnorm = (priors_safe ** prior_weight) * (likelihoods_safe ** likelihood_weight)
+
         row_sum = posterior_unnorm.sum(axis=1)
         zero_rows = (row_sum <= epsilon)
         if zero_rows.any():
-            posterior_unnorm.loc[zero_rows] = priors_aligned.loc[zero_rows]
+            # keep them as zero (no assignment from the posterior)
+            posterior_unnorm.loc[zero_rows] = 0.0
 
         posterior_row_sum = posterior_unnorm.sum(axis=1).replace(0, np.nan)
         posterior_df = posterior_unnorm.div(posterior_row_sum, axis=0).fillna(0)
+
+
+
+
     else:
         print("Regular workflow, phase 1 used to find most likely postions and phase 2 to assign labels")
         posterior_df = None
@@ -181,7 +204,7 @@ def easydecon_workflow(
 
     print("Finished!")
     print("Posterior df and proportions can be None if the required columns or input parameters missing...")
-    return phase1_result, phase2_result, assigned_labels, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result, proportions_df
+    return priors_aligned, phase1_result, phase2_result, assigned_labels, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result, proportions_df
 
 
 
