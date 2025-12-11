@@ -20,6 +20,7 @@ def easydecon_workflow(
     permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
     n_subs: int = 5,                      # permutation: number of subsamples
     quantile: float = 0.7,                # used only if filtering_algorithm="quantile"
+    phase1_output_stat: str = "expression",  # NEW: {"expression","minus_log10_p"}
     # === Phase 2 (evidence): get_clusters_by_similarity_on_tissue ===
     method: str = "wjaccard",             # {"wjaccard","cosine","spearman","euclidean","jaccard","overlap", ...}
     similarity_by_column: str = "logfoldchanges",  # 
@@ -69,7 +70,8 @@ def easydecon_workflow(
         permutation_gene_pool_fraction=permutation_gene_pool_fraction,
         n_subs=n_subs,
         quantile=quantile,
-        parametric=parametric
+        parametric=parametric,
+        output_stat=phase1_output_stat,
     )
 
     if not isinstance(phase1_result, pd.DataFrame):

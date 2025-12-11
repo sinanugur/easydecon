@@ -85,7 +85,9 @@ def common_markers_gene_expression_and_filter(
     permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
     parametric: bool = True, #if parametric, gamma or exponential distribution is used
     n_subs: int = 5,                 # number of subsamples
-    quantile: float = 0.7, #if quantile selected
+    quantile: float = 0.7, #if quantile selected,
+    output_stat: str = "expression",  # NEW: {"expression", "minus_log10_p"}
+
     **kwargs
 ) -> pd.DataFrame:
     """
@@ -335,26 +337,54 @@ def common_markers_gene_expression_and_filter(
                     if not parametric:
                         threshold = np.quantile(nonzero_null_vals, 1 - alpha)
                     else:
-                        if aggregation_method != "cs":
-                            shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
-                            threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
-                            # Fit the Generalized Pareto Distribution
-                            #shape_hat, loc_hat, scale_hat = genpareto.fit(nonzero_null_vals, floc=0)
-                            #threshold = genpareto.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
-                            
-                        else:
-                            loc_hat, scale_hat = expon.fit(nonzero_null_vals,floc=0)
-                            threshold = expon.ppf(1 - alpha, loc=loc_hat, scale=scale_hat)
+                        shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
+                        threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
+
         else:
             raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
 
-        # Zero out values below threshold
-        group_expression[group_name] = np.where(
-            group_expression[group_name] >= threshold,
-            group_expression[group_name],
-            0
-        )
-        result_df[group_name] = group_expression[group_name].fillna(0)
+
+
+        # --- NEW: choose what to output based on output_stat ---
+        if output_stat == "expression":
+            # Original behavior: threshold on expression, keep values above threshold
+            group_expression[group_name] = np.where(
+                group_expression[group_name] >= threshold,
+                group_expression[group_name],
+                0,
+            )
+            result_df[group_name] = group_expression[group_name].fillna(0)
+
+        elif output_stat == "minus_log10_p":
+            # Compute p-values relative to the null distribution and output -log10(p)
+            vals = group_expression[group_name].values
+
+            # p-values: P(null >= observed)
+            if parametric:
+                pvals = gamma.sf(vals, shape_hat, loc=loc_hat, scale=scale_hat)
+            else:
+                # empirical right-tail p-value
+                sorted_null = np.sort(nonzero_null_vals)
+                M = len(sorted_null)
+                # for each v: position of v in null; P(null >= v) = (M - idx) / M
+                idx = np.searchsorted(sorted_null, vals, side="left")
+                pvals = (M - idx) / float(M)
+
+            # Clip to avoid log(0)
+            pvals_clipped = np.clip(pvals, 1e-300, 1.0)
+            minus_log10_p = -np.log10(pvals_clipped)
+
+            # Zero out non-significant entries (p > alpha)
+            minus_log10_p[pvals > alpha] = 0.0
+
+            result_df[group_name] = pd.Series(
+                minus_log10_p,
+                index=group_expression.index,
+            ).fillna(0.0)
+
+        else:
+            raise ValueError(f"Unsupported output_stat: {output_stat}")
+
     # -----------------------------------------------------------
     # Merge results back into obs if requested
     # -----------------------------------------------------------
@@ -507,6 +537,8 @@ def get_clusters_by_similarity_on_tissue(
         table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
 
     return df
+
+
 
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
