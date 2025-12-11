@@ -26,11 +26,6 @@ def easydecon_workflow(
     similarity_by_column: str = "logfoldchanges",  # 
     lambda_param: float = 0.25,           # lambda parameter wjaccard
     weight_column: str = "logfoldchanges",  # column in markers_df for weights etc.
-    # === Proportion estimage: get_proportions_on_tissue ===
-    proportion_method: str = "nnls",     # 'nnls', 'ridge', 'elastic'
-    normalization_method: str = "unit",  # Options: 'unit', 'zscore',"l1"
-    regularization_alpha: float = 0.01,                  # regularization alpha
-    l1_ratio: float = 0.7,                # L1/L2 ratio for L1+L2 regularization
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
     softmax_tau: float = 1.0,                 # softmax temperature
@@ -185,79 +180,10 @@ def easydecon_workflow(
         fold_change_threshold=fold_change_threshold
     )
 
-    try:
-        proportions_df= get_proportions_on_tissue(
-            sdata,
-            markers_df=markers_df,
-            bin_size=bin_size,
-            add_to_obs=False,
-            gene_id_column="names",
-            common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
-            similarity_by_column=similarity_by_column,
-            method=proportion_method,
-            normalization_method=normalization_method,
-            alpha=regularization_alpha,
-            l1_ratio=l1_ratio,
-            verbose=True
-            )
-    except:
-        print("Proportions could not be estimated, please check if similarity_by_column exists in the data frame...")
-        proportions_df = None
 
     print("Finished!")
     print("Posterior df and proportions can be None if the required columns or input parameters missing...")
-    return priors_aligned, phase1_result, phase2_result, assigned_labels, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result, proportions_df
+    return phase1_result, phase2_result, assigned_labels, priors_df, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result
 
 
-
-def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
-                                      bin_size=8,gene_id_column="names",aggregation_method="mean",add_to_obs=True):
-
-    try:
-        table = sdata.tables[f"square_00{bin_size}um"]
-    except (AttributeError, KeyError):
-        table = sdata
-        
-    markers_df_tmp=markers_df[markers_df[gene_id_column].isin(table.var_names)] #just to be sure the genes are present in the spatial data
-
-    if common_group_name in table.obs.columns:
-        print(f"Processing spots with {common_group_name} != 0")
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if aggregation_method=="mean":
-        compute = lambda x: np.mean(x, axis=1).values
-    elif aggregation_method=="median":
-        compute = lambda x: np.median(x, axis=1).values
-    elif aggregation_method=="sum":
-        compute = lambda x: np.sum(x, axis=1).values
-
-    # Preallocate DataFrame with zeros
-    all_spots = table.obs.index
-    all_clusters = markers_df_tmp.index.unique()
-    df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
-    #tqdm._instances.clear()
-    
-    tqdm.pandas()
-
-    # Process only spots with expression
-    for spot in tqdm(spots_with_expression, desc='Processing spots',leave=True, position=0):
-        a = {}
-        for cluster in all_clusters:
-            genes = markers_df_tmp.loc[[cluster]][gene_id_column]
-            genes = [genes] if isinstance(genes, str) else genes.values
-            group_expression = compute(table[spot, genes].to_df())
-            a[cluster] = group_expression
-        
-        # Directly assign to preallocated DataFrame
-        df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
-    
-    if add_to_obs:
-        print("Adding results to table.obs of sdata object")
-        table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
-        table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    
-    return df
 
