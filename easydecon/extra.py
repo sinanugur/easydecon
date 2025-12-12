@@ -77,6 +77,31 @@ def easydecon_workflow(
     priors_row_sum = priors_df.sum(axis=1).replace(0, np.nan)
     priors_df = priors_df.div(priors_row_sum, axis=0).fillna(0)
 
+
+    prior_row_sums = priors_df.sum(axis=1)
+    informative_spots = prior_row_sums[prior_row_sums > 0].index
+    uninformative_spots = prior_row_sums[prior_row_sums == 0].index
+
+    try:
+        table_name = f"square_{bin_size:03}um"
+        table = sdata.tables[table_name]
+    except (AttributeError, KeyError):
+        try:
+            table = sdata.tables["table"]
+        except (AttributeError, KeyError):
+            table = sdata
+
+    mask_col = "easydecon_mask"
+
+    # initialize all spots to 0 (skip)
+    table.obs[mask_col] = 0
+
+    # mark informative spots as 1 (process in Phase 2)
+    table.obs.loc[
+        table.obs.index.intersection(informative_spots),
+        mask_col
+    ] = 1
+
     # -----------------------
     # Phase 2: Evidence
     # -----------------------
@@ -87,7 +112,8 @@ def easydecon_workflow(
         gene_id_column=gene_id_column,
         method=method,
         add_to_obs=False,
-        common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
+        #common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
+        common_group_name=mask_col,
         similarity_by_column=similarity_by_column,
         weight_column=weight_column,
         lambda_param=lambda_param
