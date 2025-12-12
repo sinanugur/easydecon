@@ -491,12 +491,13 @@ def get_clusters_by_similarity_on_tissue(
         "sum": function_row_sum,
         "mean": function_row_mean,
         "median": function_row_median,
-        "euclidean": function_row_euclidean
+        "euclidean": function_row_euclidean,
+        "auc": function_row_auc 
     }
     if method not in similarity_methods:
         raise ValueError(
             "Invalid method. Choose from: correlation, cosine, jaccard, overlap, "
-            "wjaccard, diagnostic, sum, mean, median"
+            "wjaccard, diagnostic, sum, mean, median, euclidean, auc"
         )
 
     func = similarity_methods[method]
@@ -1159,6 +1160,87 @@ def min_max_scale(series):
         #warnings.warn("All values in the series are identical; returning zeros.")
         return pd.Series(0.0, index=series.index)
     return (series - min_val) / (max_val - min_val)
+
+
+def function_row_auc(row, markers_df, **kwargs):
+    """
+    AUROC-style similarity between a spot (row) and each cluster's marker set.
+
+    For each cluster c:
+      - positives = marker genes of c present in row.index
+      - negatives = all other genes in row.index
+      - score = AUROC that positives have higher expression than negatives
+
+    Parameters
+    ----------
+    row : pandas.Series
+        Expression values for one spot. Index must be gene IDs.
+    markers_df : pandas.DataFrame
+        DataFrame with markers. Index = cluster/cell type, and a column with
+        gene IDs (e.g. 'names').
+    gene_id_column : str, in kwargs
+        Name of the column in markers_df that holds gene IDs.
+    min_markers : int, in kwargs, optional
+        Minimum number of markers that must be present in the spot to compute
+        a score. Otherwise returns fallback (default 0.5).
+    fallback_auc : float, in kwargs, optional
+        Value to use when AUC is undefined (e.g. too few markers or no negatives).
+
+    Returns
+    -------
+    dict
+        {cluster_label: auc_score}
+    """
+    gene_id_column = kwargs.get("gene_id_column", "names")
+    min_markers = kwargs.get("min_markers", 3)
+    fallback_auc = kwargs.get("fallback_auc", 0.5)
+
+    # Rank genes once per row (1 = lowest expression, N = highest)
+    ranks = row.rank(method="average", ascending=True)
+    N = len(ranks)
+
+    # Pre-compute for safety
+    if N < 2:
+        # Degenerate case: only one gene
+        return {c: fallback_auc for c in markers_df.index.unique()}
+
+    scores = {}
+
+    # Iterate clusters / groups in markers_df
+    for c in markers_df.index.unique():
+        # Get marker genes for this cluster
+        gene_list = markers_df.loc[[c], gene_id_column].astype(str)
+        # Intersect with genes present in this spot
+        genes_pos = pd.Index(gene_list).intersection(ranks.index)
+
+        n_pos = len(genes_pos)
+        n_neg = N - n_pos
+
+        # Not enough markers or no negatives -> undefined AUC
+        if (n_pos < min_markers) or (n_neg <= 0):
+            scores[c] = fallback_auc
+            continue
+
+        # Sum of ranks of positives
+        sum_ranks = ranks[genes_pos].sum()
+
+        # Wilcoxon U statistic
+        U = sum_ranks - n_pos * (n_pos + 1) / 2.0
+
+        # Normalize to AUC
+        auc = U / (n_pos * n_neg)
+
+        # Numerical safety: clamp to [0,1]
+        if not np.isfinite(auc):
+            auc = fallback_auc
+        else:
+            auc = max(0.0, min(1.0, auc))
+
+        scores[c] = auc
+
+    return scores
+
+
 
 def function_row_jaccard(row, markers_df, **kwargs):
     a = {}
