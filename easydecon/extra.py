@@ -4,6 +4,7 @@ def easydecon_workflow(
     sdata,
     markers_df,
     marker_genes=None,                    # This can be a list of genes, You can only give markers_df
+    mask_col = "easydecon_mask",          # If markers_genes given, this column will be used to mask informative spots
     # --- shared / data schema ---
     celltype: str = "group",              # column in markers_df holding cluster IDs
     gene_id_column: str = "names",        # column in markers_df holding gene names
@@ -93,7 +94,7 @@ def easydecon_workflow(
         except (AttributeError, KeyError):
             table = sdata
 
-    mask_col = "easydecon_mask"
+    
 
     # initialize all spots to 0 (skip)
     table.obs[mask_col] = 0
