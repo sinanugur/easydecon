@@ -26,6 +26,8 @@ def easydecon_workflow(
     similarity_by_column: str = "logfoldchanges",  # 
     lambda_param: float = 0.25,           # lambda parameter wjaccard
     weight_column: str = "logfoldchanges",  # column in markers_df for weights etc.
+    min_markers: int = 3,
+    fallback_auc: float = 0.5,
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
     softmax_tau: float = 1.0,                 # softmax temperature
@@ -116,7 +118,9 @@ def easydecon_workflow(
         common_group_name=mask_col,
         similarity_by_column=similarity_by_column,
         weight_column=weight_column,
-        lambda_param=lambda_param
+        lambda_param=lambda_param,
+        min_markers=min_markers,
+        fallback_auc=fallback_auc
     )
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
