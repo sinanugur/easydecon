@@ -340,50 +340,109 @@ def common_markers_gene_expression_and_filter(
                         shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
                         threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
 
+        elif filtering_algorithm == "nb":
+            if "counts" not in table.layers:
+                raise ValueError("NB filtering requires raw counts in table.layers['counts'].")
+
+            if aggregation_method != "sum":
+                raise ValueError("NB filtering currently supports aggregation_method='sum' only.")
+
+            # Observed marker-sum per bin (raw counts)
+            Xg = table[obs_mask, var_mask].layers["counts"]     # sparse is fine
+            S = np.asarray(Xg.sum(axis=1)).ravel().astype(float)
+
+            # Library size per bin (raw counts)
+            Xall = table[obs_mask, :].layers["counts"]
+            total = np.asarray(Xall.sum(axis=1)).ravel().astype(float)
+            median_total = np.median(total) + 1e-8
+            sf = total / median_total
+
+            # Baseline composition for these marker genes (q_g)
+            # Use all bins in obs_mask for stability
+            gene_sum = np.asarray(Xg.sum(axis=0)).ravel().astype(float)
+            total_sum = total.sum() + 1e-8
+            q = gene_sum / total_sum  # length = n_marker_genes
+
+            # Expected mu_bg and variance under global NB dispersion
+            theta = kwargs.get("nb_global_theta", 50.0)  # minimal: read from kwargs if provided
+            mu = (sf[:, None] * q[None, :] * median_total)
+            mu = np.maximum(mu, 1e-8)
+            var = mu + (mu ** 2) / float(theta)
+
+            ES = mu.sum(axis=1)
+            VS = var.sum(axis=1) + 1e-8
+
+            from scipy.stats import norm
+            Z = (S - ES) / np.sqrt(VS)
+            pvals = norm.sf(Z)  # right-tail
+
+            # Fill group_expression in the same shape/index you already use
+            group_expression = pd.DataFrame({group_name: S}, index=table.obs_names[obs_mask])
+
+            # Then reuse your existing output_stat block, but with:
+            # - threshold as bin-specific (expression mode)
+            # - pvals from NB (minus_log10_p mode)
+
+            if output_stat == "expression":
+                zcrit = norm.isf(alpha)
+                thresh = ES + zcrit * np.sqrt(VS)
+                kept = np.where(S >= thresh, S, 0.0)
+                result_df[group_name] = pd.Series(kept, index=group_expression.index).fillna(0.0)
+
+            elif output_stat == "minus_log10_p":
+                pclip = np.clip(pvals, 1e-300, 1.0)
+                score = -np.log10(pclip)
+                score[pvals > alpha] = 0.0
+                result_df[group_name] = pd.Series(score, index=group_expression.index).fillna(0.0)
+
+            else:
+                raise ValueError(f"Unsupported output_stat: {output_stat}")
+
+        
         else:
             raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
 
 
+        if filtering_algorithm != "nb":
+            # --- NEW: choose what to output based on output_stat ---
+            if output_stat == "expression":
+                # Original behavior: threshold on expression, keep values above threshold
+                group_expression[group_name] = np.where(
+                    group_expression[group_name] >= threshold,
+                    group_expression[group_name],
+                    0,
+                )
+                result_df[group_name] = group_expression[group_name].fillna(0)
 
-        # --- NEW: choose what to output based on output_stat ---
-        if output_stat == "expression":
-            # Original behavior: threshold on expression, keep values above threshold
-            group_expression[group_name] = np.where(
-                group_expression[group_name] >= threshold,
-                group_expression[group_name],
-                0,
-            )
-            result_df[group_name] = group_expression[group_name].fillna(0)
+            elif output_stat == "minus_log10_p":
+                # Compute p-values relative to the null distribution and output -log10(p)
+                vals = group_expression[group_name].values
 
-        elif output_stat == "minus_log10_p":
-            # Compute p-values relative to the null distribution and output -log10(p)
-            vals = group_expression[group_name].values
+                # p-values: P(null >= observed)
+                if parametric:
+                    pvals = gamma.sf(vals, shape_hat, loc=loc_hat, scale=scale_hat)
+                else:
+                    # empirical right-tail p-value
+                    sorted_null = np.sort(nonzero_null_vals)
+                    M = len(sorted_null)
+                    # for each v: position of v in null; P(null >= v) = (M - idx) / M
+                    idx = np.searchsorted(sorted_null, vals, side="left")
+                    pvals = (M - idx) / float(M)
 
-            # p-values: P(null >= observed)
-            if parametric:
-                pvals = gamma.sf(vals, shape_hat, loc=loc_hat, scale=scale_hat)
+                # Clip to avoid log(0)
+                pvals_clipped = np.clip(pvals, 1e-300, 1.0)
+                minus_log10_p = -np.log10(pvals_clipped)
+
+                # Zero out non-significant entries (p > alpha)
+                minus_log10_p[pvals > alpha] = 0.0
+
+                result_df[group_name] = pd.Series(
+                    minus_log10_p,
+                    index=group_expression.index,
+                ).fillna(0.0)
+
             else:
-                # empirical right-tail p-value
-                sorted_null = np.sort(nonzero_null_vals)
-                M = len(sorted_null)
-                # for each v: position of v in null; P(null >= v) = (M - idx) / M
-                idx = np.searchsorted(sorted_null, vals, side="left")
-                pvals = (M - idx) / float(M)
-
-            # Clip to avoid log(0)
-            pvals_clipped = np.clip(pvals, 1e-300, 1.0)
-            minus_log10_p = -np.log10(pvals_clipped)
-
-            # Zero out non-significant entries (p > alpha)
-            minus_log10_p[pvals > alpha] = 0.0
-
-            result_df[group_name] = pd.Series(
-                minus_log10_p,
-                index=group_expression.index,
-            ).fillna(0.0)
-
-        else:
-            raise ValueError(f"Unsupported output_stat: {output_stat}")
+                raise ValueError(f"Unsupported output_stat: {output_stat}")
 
     # -----------------------------------------------------------
     # Merge results back into obs if requested
