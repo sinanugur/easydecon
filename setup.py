@@ -22,7 +22,7 @@ setup(
     name="easydecon",
     version="0.1.4a",
     packages=find_packages(exclude=('tests*','testing*')),
-    #scripts=["scripts/raw_to_segmented_h5ad.py"],
+    scripts=["easydecon/expression_statistics.py"],
     long_description=long_description,
     long_description_content_type="text/markdown",
     #extras_require={"dev":["pytest>=3.7"]},
