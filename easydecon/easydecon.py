@@ -551,7 +551,7 @@ def get_clusters_by_similarity_on_tissue(
         "mean": function_row_mean,
         "median": function_row_median,
         "euclidean": function_row_euclidean,
-        "auc": function_row_auc 
+        "auc": function_row_auc_specific
     }
     if method not in similarity_methods:
         raise ValueError(
@@ -591,7 +591,7 @@ def get_clusters_by_similarity_on_tissue(
 
 
     # Optionally merge back into table.obs
-    if method != "diagnostic" or add_to_obs:
+    if method != "diagnostic" and add_to_obs:
         print("Adding results to table.obs of sdata object")
         table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
         table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
@@ -1113,6 +1113,94 @@ def function_row_auc(row, markers_df, **kwargs):
 
     return scores
 
+import pandas as pd
+import numpy as np
+
+def function_row_auc_specific(row, markers_df, **kwargs):
+    """
+    High-specificity AUROC scoring. 
+    Filters out noise and focuses on top markers to reduce false positives.
+    """
+    gene_id_column = kwargs.get("gene_id_column", "names")
+    min_markers = kwargs.get("min_markers", 3)
+    fallback_auc = kwargs.get("fallback_auc", 0.5)
+    
+    # NEW 1: Expression Threshold
+    # Only rank genes that have biologically relevant expression.
+    # Everything below this is treated as 'negative' background.
+    expr_threshold = kwargs.get("expression_threshold", 0.1)
+    
+    # NEW 2: Limit to Top N Markers
+    # Only look for the top N most specific markers per cluster.
+    top_n = kwargs.get("top_n_markers", None) 
+
+    # Filter the row first
+    valid_genes = row[row > expr_threshold]
+    
+    # If the spot is empty after filtering, return fallback
+    if len(valid_genes) < 2:
+         return {c: fallback_auc for c in markers_df.index.unique()}
+
+    # Rank only the expressed genes
+    # Genes not in valid_genes are implicitly rank 0 (or below these ranks)
+    ranks = valid_genes.rank(method="average", ascending=True)
+    N = len(row) # The universe is still the total gene space of the spot
+
+    scores = {}
+
+    for c in markers_df.index.unique():
+        # Get marker genes
+        gene_list = markers_df.loc[[c], gene_id_column].astype(str)
+        
+        # NEW 2 Implementation: Slice the top N markers
+        if top_n is not None:
+            gene_list = gene_list.iloc[:top_n]
+
+        # Intersect with valid (above threshold) genes
+        genes_pos = pd.Index(gene_list).intersection(ranks.index)
+        
+        n_pos_found = len(genes_pos)
+        n_total_markers = len(gene_list)
+
+        # STRICTER CHECK: 
+        # You might want to fail if we found fewer than X% of the top markers
+        if n_pos_found < min_markers:
+            scores[c] = fallback_auc
+            continue
+        
+        # Calculate AUC components
+        # Note: We treat genes below threshold as having rank 0. 
+        # However, for standard AUC calculation in this specific context (Genes vs Background),
+        # we usually only care about the ranks of the DETECTED markers relative to DETECTED background.
+        
+        # Rank Sum of detected markers
+        sum_ranks = ranks[genes_pos].sum()
+        
+        # The number of negatives is the number of valid genes minus the markers found
+        n_neg = len(valid_genes) - n_pos_found
+
+        if n_neg <= 0:
+             scores[c] = fallback_auc
+             continue
+
+        # Wilcoxon U
+        U = sum_ranks - n_pos_found * (n_pos_found + 1) / 2.0
+        auc = U / (n_pos_found * n_neg)
+
+        # NEW 3: Recovery Penalty (Optional)
+        # If you want to penalize spots that only have 3 out of 50 markers,
+        # multiply the AUC by the fraction of markers recovered.
+        # Uncomment the line below to enable:
+        # auc = auc * (n_pos_found / n_total_markers)
+
+        if not np.isfinite(auc):
+            auc = fallback_auc
+        else:
+            auc = max(0.0, min(1.0, auc))
+
+        scores[c] = auc
+
+    return scores
 
 
 def function_row_jaccard(row, markers_df, **kwargs):

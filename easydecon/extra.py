@@ -17,7 +17,7 @@ def easydecon_workflow(
     parametric: bool = True,              # parametric or empirical quantile
     alpha: float = 0.01,                  # permutation cutoff level
     subsample_size: int = 25000,          # subsample size for permutation
-    subsample_signal_quantile: float = 0.1,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
+    subsample_signal_quantile: float = 0,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
     permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
     n_subs: int = 5,                      # permutation: number of subsamples
     quantile: float = 0.7,                # used only if filtering_algorithm="quantile"
@@ -29,6 +29,7 @@ def easydecon_workflow(
     weight_column: str = "logfoldchanges",  # column in markers_df for weights etc.
     min_markers: int = 3,
     fallback_auc: float = 0.5,
+    expression_threshold: float = 0.1,
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
     softmax_tau: float = 1.0,                 # softmax temperature
@@ -121,7 +122,8 @@ def easydecon_workflow(
         weight_column=weight_column,
         lambda_param=lambda_param,
         min_markers=min_markers,
-        fallback_auc=fallback_auc
+        fallback_auc=fallback_auc,
+        expression_threshold=expression_threshold
     )
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
