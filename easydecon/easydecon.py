@@ -614,7 +614,9 @@ def read_markers_dataframe(sdata,
                            celltype="group",
                            key="rank_genes_groups",
                            log2fc_min=0.25,
-                           pval_cutoff=0.05):
+                           pval_cutoff=0.05,
+                           drop_ribosomal=False,
+                           drop_mitochondrial=False):
     """
     Reads and processes marker genes data for spatial transcriptomics analysis.
 
@@ -661,6 +663,14 @@ def read_markers_dataframe(sdata,
     pval_cutoff : float, optional
         Maximum adjusted p-value threshold for gene selection.
         Default: 0.05
+    drop_ribosomal : bool, optional
+        Whether to remove ribosomal genes before final selection.
+        Removes genes starting with RPS or RPL (case-insensitive).
+        Default: False
+    drop_mitochondrial : bool, optional
+        Whether to remove mitochondrial genes before final selection.
+        Removes genes starting with MT- or mt-.
+        Default: False
 
     Returns:
     --------
@@ -708,6 +718,15 @@ def read_markers_dataframe(sdata,
         df=df[df["logfoldchanges"] >= log2fc_min]
     if "pvals_adj" in df.columns:
         df=df[df["pvals_adj"] <= pval_cutoff]
+
+    # Optional gene family filtering
+    if drop_ribosomal:
+        gene_upper = df[gene_id_column].str.upper()
+        df = df[~gene_upper.str.startswith(("RPS", "RPL"))]
+
+    if drop_mitochondrial:
+        gene_upper = df[gene_id_column].str.upper()
+        df = df[~gene_upper.str.startswith("MT-")]
 
     df = df[df[gene_id_column].isin(table.var_names)] #check if the var_names are present in the spatial data
     df = df[~df[celltype].isin(exclude_celltype)]
