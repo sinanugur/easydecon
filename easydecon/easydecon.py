@@ -805,15 +805,17 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
         return pd.Series(probs, index=row.index)
 
 
-    if method == "max":
+    if method == "max" and not allow_multiple:
         df_reindexed = df_filtered[~(df_filtered == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
 
-    elif method == "zmax":
+    elif method == "zmax" and not allow_multiple:
         tmp = df_filtered.replace(0, np.nan).apply(lambda x: zscore(x, nan_policy='omit'), axis=0).idxmax(axis=1)
         df_reindexed = tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
 
     elif method == "hybrid":
         # row-wise zscore
+        if allow_multiple:
+            print("Multiple assignments per spot allowed, so hybrid assignment method is selected...")
         row_is_all_zero_or_nan = ~np.isfinite(df_filtered).any(axis=1) | (df_filtered.replace(0, np.nan).isna().all(axis=1))
         informative_mask = ~row_is_all_zero_or_nan
         similarity_zscores = df_filtered[informative_mask].apply(
