@@ -231,7 +231,8 @@ def common_markers_gene_expression_and_filter(
 
     
 
-
+    shape_hat = loc_hat = scale_hat = None
+    nonzero_null_vals = None
 
     # Prepare a final DataFrame to collect group results
     result_df = pd.DataFrame(index=spots_to_be_used)
