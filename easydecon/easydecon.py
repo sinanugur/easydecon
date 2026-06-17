@@ -198,13 +198,16 @@ def common_markers_gene_expression_and_filter(
 
     # 1) Retrieve the table
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
     gene_variability = sparse_var(table.X,axis=0)
     gene_pool = table.var_names[np.argsort(gene_variability)[-int(permutation_gene_pool_fraction * len(table.var_names)):]]
@@ -519,13 +522,16 @@ def get_clusters_by_similarity_on_tissue(
     """
     # Try to get the appropriate table from sdata; if not present, treat sdata as the table
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
     
     # Enable tqdm progress bar in pandas
@@ -552,7 +558,7 @@ def get_clusters_by_similarity_on_tissue(
         "mean": function_row_mean,
         "median": function_row_median,
         "euclidean": function_row_euclidean,
-        "auc": function_row_auc_specific
+        "auc": function_row_auc_specific_v2
     }
     if method not in similarity_methods:
         raise ValueError(
@@ -607,7 +613,7 @@ def read_markers_dataframe(sdata,
                            filename=None,
                            adata=None,
                            exclude_celltype=[],
-                           bin_size=8,
+                           bin_size=8, #if no segmentation found
                            top_n_genes=60,
                            sort_by_column="scores",
                            ascending=False,
@@ -692,13 +698,16 @@ def read_markers_dataframe(sdata,
     - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
     """
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
 
     if adata is None:
@@ -797,13 +806,16 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
     """
 
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
     table.obs.drop(columns=[results_column], inplace=True, errors='ignore')
 
@@ -909,13 +921,16 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
     table.obs.drop(columns=[temp_column],inplace=True,errors='ignore')
     #table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
@@ -1225,6 +1240,117 @@ def function_row_auc_specific(row, markers_df, **kwargs):
     return scores
 
 
+def function_row_auc_specific_v2(row, markers_df, **kwargs):
+    """
+    Marker-union AUROC score with:
+      - missing-marker penalty
+      - centered AUC evidence
+      - recovery penalty
+      - optional top-N marker restriction
+      - optional marker-weight sorting
+
+    Returns scores in [0, 1], where 0 means no evidence.
+    """
+    import numpy as np
+    import pandas as pd
+
+    gene_id_column = kwargs.get("gene_id_column", "names")
+    weight_column = kwargs.get("weight_column", "logfoldchanges")
+    min_markers = kwargs.get("min_markers", 3)
+
+    # Important: for centered AUC, fallback should be 0, not 0.5
+    fallback_score = kwargs.get("fallback_auc", 0.0)
+
+    expr_threshold = kwargs.get("expression_threshold", 0.0)
+    top_n = kwargs.get("top_n_markers", None)
+    recovery_power = kwargs.get("recovery_power", 1.0)
+    center_auc = kwargs.get("center_auc", True)
+    drop_shared_markers = kwargs.get("drop_shared_markers", False)
+
+    # Build cluster -> marker list
+    marker_lists = {}
+    for c in markers_df.index.unique():
+        cdf = markers_df.loc[[c]].copy()
+
+        # Ensure top_n means top by marker strength, not arbitrary row order
+        if weight_column in cdf.columns:
+            cdf = cdf.sort_values(weight_column, ascending=False)
+
+        genes = cdf[gene_id_column].astype(str).dropna().tolist()
+
+        if top_n is not None:
+            genes = genes[:top_n]
+
+        marker_lists[c] = genes
+
+    # Optionally remove markers shared across multiple cell types
+    if drop_shared_markers:
+        all_marker_series = pd.Series(
+            [g for genes in marker_lists.values() for g in genes]
+        )
+        gene_counts = all_marker_series.value_counts()
+        marker_lists = {
+            c: [g for g in genes if gene_counts.get(g, 0) == 1]
+            for c, genes in marker_lists.items()
+        }
+
+    # Use marker union as the AUC universe
+    marker_union = pd.Index(
+        sorted(set(g for genes in marker_lists.values() for g in genes))
+    ).intersection(row.index)
+
+    if len(marker_union) < 2:
+        return {c: fallback_score for c in marker_lists}
+
+    # Do not drop low-expression genes. Keep them so absent markers are penalized.
+    x = row.reindex(marker_union).fillna(0.0).astype(float)
+
+    # Optional thresholding: set low values to 0, but keep them in ranking universe
+    if expr_threshold is not None and expr_threshold > 0:
+        x = x.where(x > expr_threshold, 0.0)
+
+    ranks = x.rank(method="average", ascending=True)
+
+    scores = {}
+
+    for c, genes in marker_lists.items():
+        pos = pd.Index(genes).intersection(marker_union)
+        n_pos = len(pos)
+        n_neg = len(marker_union) - n_pos
+
+        if n_pos < min_markers or n_neg <= 0:
+            scores[c] = fallback_score
+            continue
+
+        detected = (row.reindex(pos).fillna(0.0) > expr_threshold)
+        n_detected = int(detected.sum())
+
+        if n_detected < min_markers:
+            scores[c] = fallback_score
+            continue
+
+        sum_ranks = ranks.loc[pos].sum()
+        U = sum_ranks - n_pos * (n_pos + 1) / 2.0
+        auc = U / (n_pos * n_neg)
+
+        if not np.isfinite(auc):
+            scores[c] = fallback_score
+            continue
+
+        auc = float(np.clip(auc, 0.0, 1.0))
+
+        if center_auc:
+            score = max(0.0, 2.0 * (auc - 0.5))
+        else:
+            score = auc
+
+        recovery = n_detected / float(n_pos)
+        score *= recovery ** recovery_power
+
+        scores[c] = float(np.clip(score, 0.0, 1.0))
+
+    return scores
+
 def function_row_jaccard(row, markers_df, **kwargs):
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
@@ -1401,13 +1527,16 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
 
 def add_df_to_spatialdata(sdata,df,bin_size=8):
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
     table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
     table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)

@@ -87,13 +87,16 @@ def easydecon_workflow(
     uninformative_spots = prior_row_sums[prior_row_sums == 0].index
 
     try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
+        table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
         try:
-            table = sdata.tables["table"]
+            table_name = f"square_{bin_size:03}um"
+            table = sdata.tables[table_name]
         except (AttributeError, KeyError):
-            table = sdata
+            try:
+                table = sdata.tables["table"]
+            except (AttributeError, KeyError):
+                table = sdata
 
     
 
