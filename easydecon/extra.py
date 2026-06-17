@@ -1,4 +1,11 @@
-from .easydecon import *
+import numpy as np
+import pandas as pd
+
+from .easydecon import (
+    assign_clusters_from_df,
+    common_markers_gene_expression_and_filter,
+    get_clusters_by_similarity_on_tissue,
+)
 
 def easydecon_workflow(
     sdata,
@@ -48,6 +55,17 @@ def easydecon_workflow(
     fold_change_threshold: float = 2.0,
 
 ):
+    valid_likelihoods = {"row_normalize", "softmax"}
+    if evidence_to_likelihood not in valid_likelihoods:
+        raise ValueError(f"evidence_to_likelihood must be one of {valid_likelihoods}.")
+    if softmax_tau <= 0:
+        raise ValueError("softmax_tau must be greater than 0.")
+    if epsilon <= 0:
+        raise ValueError("epsilon must be greater than 0.")
+    if prior_weight < 0 or likelihood_weight < 0:
+        raise ValueError("prior_weight and likelihood_weight must be non-negative.")
+
+    marker_genes_is_list = isinstance(marker_genes, list)
 
     # -----------------------
     # Phase 1: Priors
@@ -84,8 +102,6 @@ def easydecon_workflow(
 
     prior_row_sums = priors_df.sum(axis=1)
     informative_spots = prior_row_sums[prior_row_sums > 0].index
-    uninformative_spots = prior_row_sums[prior_row_sums == 0].index
-
     try:
         table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
@@ -117,6 +133,7 @@ def easydecon_workflow(
         markers_df=markers_df,
         bin_size=bin_size,
         gene_id_column=gene_id_column,
+        celltype=celltype,
         method=method,
         add_to_obs=False,
         #common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
@@ -143,23 +160,24 @@ def easydecon_workflow(
 
     elif evidence_to_likelihood == "softmax":
         x = evidence_df.to_numpy(dtype=float)
-        row_max = np.nanmax(x, axis=1, keepdims=True)
-        logits = (x - row_max) / max(softmax_tau, epsilon)
-        np.exp(logits, out=logits)
+        x = np.where(np.isfinite(x), x, -np.inf)
+        row_max = np.max(x, axis=1, keepdims=True)
+        valid_rows = np.isfinite(row_max[:, 0])
+        logits = np.zeros_like(x, dtype=float)
+        valid_logits = (x[valid_rows] - row_max[valid_rows]) / softmax_tau
+        logits[valid_rows] = np.exp(valid_logits)
         row_sum = np.sum(logits, axis=1, keepdims=True)
         row_sum[row_sum == 0] = np.nan
         likelihoods_np = logits / row_sum
         likelihoods_np = np.nan_to_num(likelihoods_np, nan=0.0)
         likelihoods_df = pd.DataFrame(likelihoods_np, index=evidence_df.index, columns=evidence_df.columns)
 
-    else:
-        raise ValueError("evidence_to_likelihood must be one of {'row_normalize','softmax'}.")
 
     # -----------------------
     # Posterior combination
     # -----------------------
 
-    if not isinstance(marker_genes,list):
+    if not marker_genes_is_list:
         common_clusters = priors_df.columns.intersection(likelihoods_df.columns)
         if len(common_clusters) == 0:
             raise ValueError("No overlapping cluster columns between Phase 1 and Phase 2 outputs.")
@@ -205,9 +223,10 @@ def easydecon_workflow(
     # Final assignment
     # -----------------------
 
+    assignment_df = posterior_df if posterior_df is not None and not marker_genes_is_list else phase2_result
     assigned_labels = assign_clusters_from_df(
         sdata,
-        df=posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result,
+        df=assignment_df,
         bin_size=bin_size,
         results_column=results_column,
         method=assign_method,
@@ -219,6 +238,4 @@ def easydecon_workflow(
 
     print("Finished!")
     print("Posterior df and proportions can be None if the required columns or input parameters missing...")
-    return phase1_result, phase2_result, assigned_labels, priors_df, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result
-
-
+    return phase1_result, phase2_result, assigned_labels, priors_df, assignment_df

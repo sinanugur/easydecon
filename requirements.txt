@@ -1,21 +1,21 @@
-scipy
-regex
-matplotlib
-pandas==2.2.2
-anndata==0.10.9
-numpy
-stardist==0.9.1
-bin2cell==0.3.0
-spatialdata==0.2.2
-spatialdata-io==0.1.4
-spatialdata-plot==0.2.4
-xarray-spatial==0.4.0
-xarray==2024.7.0
-dask==2024.11.2
-ipykernel
-squidpy
-joblib
-xlrd==2.0.1
-tensorflow-macos==2.9.0; platform_system == "Darwin"
-tensorflow-metal==0.5.0; platform_system == "Darwin"
-tensorflow==2.9.0; platform_system != "Darwin"
+scipy==1.17.1
+# regex
+matplotlib==3.10.9
+pandas==2.3.3
+anndata==0.12.11
+numpy==2.4.4
+# stardist==0.9.1
+# bin2cell==0.3.0
+spatialdata==0.7.2
+spatialdata-io==0.6.0
+spatialdata-plot==0.3.3
+xarray-spatial==0.9.8
+xarray==2026.4.0
+dask==2026.1.1
+# ipykernel
+squidpy==1.8.1
+joblib==1.5.3
+# xlrd==2.0.1
+# tensorflow-macos==2.9.0; platform_system == "Darwin"
+# tensorflow-metal==0.5.0; platform_system == "Darwin"
+# tensorflow==2.9.0; platform_system != "Darwin"

@@ -24,16 +24,11 @@ from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
 from scipy.spatial.distance import euclidean
 from scipy.stats import gamma
-from scipy.stats import expon
-from scipy.optimize import nnls
 from scipy.stats import zscore
-from scipy.stats import genpareto
 from tqdm.auto import tqdm
 from scipy.sparse import issparse
 
 import logging
-
-from sklearn.linear_model import Ridge, Lasso, ElasticNet
 
 
 def _suppress_warnings_in_worker():
@@ -49,8 +44,6 @@ def process_row_with_suppression(row, func, **kwargs):
 from .config import config
 
 from joblib import Parallel, delayed
-
-from spatialdata import polygon_query
 
 
 # Ensure that the progress_apply method is available
@@ -73,7 +66,7 @@ def common_markers_gene_expression_and_filter(
     common_group_name: str = "MarkerGroup",  # will create this column in the spatial data table, used if marker_genes is a list
     celltype: str = "group",               # DF column holding group IDs
     gene_id_column: str = "names",                # DF column holding marker gene names
-    exclude_group_names: list[str] = [],
+    exclude_group_names: list[str] | None = None,
     bin_size: int = 8,
     aggregation_method: str = "sum",
     add_to_obs: bool = True,
@@ -160,6 +153,26 @@ def common_markers_gene_expression_and_filter(
         The final DataFrame with aggregated + thresholded expression for each group.
         Columns = one per group, indexed by bin.
     """
+    valid_filtering_algorithms = {"permutation", "quantile", "nb"}
+    if filtering_algorithm not in valid_filtering_algorithms:
+        raise ValueError(f"filtering_algorithm must be one of {valid_filtering_algorithms}.")
+    valid_output_stats = {"expression", "minus_log10_p"}
+    if output_stat not in valid_output_stats:
+        raise ValueError(f"output_stat must be one of {valid_output_stats}.")
+    if filtering_algorithm == "quantile" and output_stat == "minus_log10_p":
+        raise ValueError("output_stat='minus_log10_p' requires filtering_algorithm='permutation' or 'nb'.")
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1.")
+    if not 0 <= quantile <= 1:
+        raise ValueError("quantile must be between 0 and 1.")
+    if not 0 <= subsample_signal_quantile < 0.5:
+        raise ValueError("subsample_signal_quantile must be in [0, 0.5).")
+    if not 0 < permutation_gene_pool_fraction <= 1:
+        raise ValueError("permutation_gene_pool_fraction must be between 0 and 1.")
+    if n_subs < 1:
+        raise ValueError("n_subs must be at least 1.")
+
+    exclude_group_names = exclude_group_names or []
 
     # -----------------------------------------------------------
     # 0) Convert marker_genes input to a dictionary: group -> list of genes
@@ -210,7 +223,8 @@ def common_markers_gene_expression_and_filter(
                 table = sdata
 
     gene_variability = sparse_var(table.X,axis=0)
-    gene_pool = table.var_names[np.argsort(gene_variability)[-int(permutation_gene_pool_fraction * len(table.var_names)):]]
+    gene_pool_size = max(1, int(permutation_gene_pool_fraction * len(table.var_names)))
+    gene_pool = table.var_names[np.argsort(gene_variability)[-gene_pool_size:]]
 
     # 2) Exclude spots
     spots_to_be_used = table.obs.index
@@ -324,7 +338,11 @@ def common_markers_gene_expression_and_filter(
                         leave=True,
                         position=0
                     ):
-                        random_genes = np.random.choice(gene_pool, size=marker_set_size, replace=False)
+                        random_genes = np.random.choice(
+                            gene_pool,
+                            size=marker_set_size,
+                            replace=len(gene_pool) < marker_set_size,
+                        )
 
                         if isinstance(aggregator, str):
                             random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
@@ -470,6 +488,7 @@ def get_clusters_by_similarity_on_tissue(
     common_group_name=None,
     bin_size=8,
     gene_id_column="names",
+    celltype="group",
     #similarity_by_column="logfoldchanges",
     method="wjaccard",
     add_to_obs=False,
@@ -498,6 +517,9 @@ def get_clusters_by_similarity_on_tissue(
     gene_id_column : str, optional
         Name of the column in `markers_df` that contains gene IDs. 
         Default is "names".
+    celltype : str, optional
+        Column in `markers_df` containing cluster/cell type labels when the
+        DataFrame index is not already grouped by cell type.
     similarity_by_column : str, optional
         Column in `markers_df` used to measure similarity or weight. 
         Default is "logfoldchanges".
@@ -520,6 +542,15 @@ def get_clusters_by_similarity_on_tissue(
         A DataFrame whose index matches `table.obs.index` with cluster 
         assignment columns (or other metrics) computed by the specified method.
     """
+    if not isinstance(markers_df, pd.DataFrame):
+        raise TypeError("markers_df must be a pandas DataFrame.")
+    if gene_id_column not in markers_df.columns:
+        raise ValueError(f"markers_df must contain gene_id_column '{gene_id_column}'.")
+    if celltype in markers_df.columns:
+        markers_df = markers_df.copy()
+        markers_df[celltype] = markers_df[celltype].astype(str)
+        markers_df.set_index(celltype, inplace=True, drop=False)
+
     # Try to get the appropriate table from sdata; if not present, treat sdata as the table
     try:
         table = sdata.tables["cell_segmentations"]
@@ -575,6 +606,7 @@ def get_clusters_by_similarity_on_tissue(
     # Run computations in parallel
     results = Parallel(
         n_jobs=config.n_jobs,
+        batch_size=config.batch_size,
         backend="loky",  # Ensure workers do not inherit unnecessary imports
     )(
         delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
@@ -612,7 +644,7 @@ def get_clusters_by_similarity_on_tissue(
 def read_markers_dataframe(sdata,
                            filename=None,
                            adata=None,
-                           exclude_celltype=[],
+                           exclude_celltype=None,
                            bin_size=8, #if no segmentation found
                            top_n_genes=60,
                            sort_by_column="scores",
@@ -697,6 +729,8 @@ def read_markers_dataframe(sdata,
     - Genes are filtered based on log2 fold change and adjusted p-value thresholds.
     - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
     """
+    exclude_celltype = exclude_celltype or []
+
     try:
         table = sdata.tables["cell_segmentations"]
     except (AttributeError, KeyError):
@@ -948,7 +982,11 @@ def plot_assigned_clusters_from_dataframe(sdata,dataframe,sample_id,bin_size=8,t
 
 
 def napari_region_assignment(sdata,key="Shapes",bin_size=8,column="napari",target_coordinate_system="global"):
-    
+    try:
+        from spatialdata import polygon_query
+    except ImportError as exc:
+        raise ImportError("napari_region_assignment requires spatialdata to be installed.") from exc
+
     try:
         sdata[key]
     except:
