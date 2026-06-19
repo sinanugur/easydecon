@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easydecon"
+dynamic = ["version"]
+description = "Marker-gene based similarity and deconvolution utilities for single-cell and spatial transcriptomics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Sinan U. Umu", email = "sinanugur@gmail.com"},
+]
+keywords = [
+    "single-cell",
+    "spatial transcriptomics",
+    "deconvolution",
+    "bioinformatics",
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scanpy",
+    "anndata",
+    "joblib",
+    "tqdm",
+    "scikit-learn",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+spatial = [
+    "spatialdata",
+    "spatialdata-io",
+    "spatialdata-plot",
+]
+deseq = [
+    "pydeseq2",
+]
+fast = [
+    "fireducks",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+docs = [
+    "jupyter",
+    "ipykernel",
+]
+all = [
+    "spatialdata",
+    "spatialdata-io",
+    "spatialdata-plot",
+    "pydeseq2",
+    "fireducks",
+    "pytest",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage = "https://github.com/sinanugur/easydecon"
+Repository = "https://github.com/sinanugur/easydecon"
+
+[project.scripts]
+run_bin2cell_segmentation = "easydecon.segmentation:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "easydecon._version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["easydecon*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]

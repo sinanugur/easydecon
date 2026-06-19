@@ -1,22 +1,78 @@
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
+from ._schema import get_table
+from ._validation import (
+    EVIDENCE_TO_LIKELIHOOD_METHODS,
+    validate_choice,
+    validate_positive,
+)
 from .easydecon import (
     assign_clusters_from_df,
     common_markers_gene_expression_and_filter,
     get_clusters_by_similarity_on_tissue,
+    read_markers_dataframe,
 )
+
+
+@dataclass
+class EasyDeconResult:
+    markers_df: pd.DataFrame
+    phase1_result: pd.DataFrame
+    phase2_result: pd.DataFrame
+    assigned_labels: pd.DataFrame
+    priors_df: pd.DataFrame
+    likelihoods_df: pd.DataFrame
+    posterior_df: pd.DataFrame | None
+    assignment_df: pd.DataFrame
+    diagnostics: dict
+
 
 def easydecon_workflow(
     sdata,
-    markers_df,
+    markers_df=None,
     marker_genes=None,                    # This can be a list of genes, You can only give markers_df
+    filename=None,
+    adata=None,
     mask_col = "easydecon_mask",          # If markers_genes given, this column will be used to mask informative spots
     # --- shared / data schema ---
     celltype: str = "group",              # column in markers_df holding cluster IDs
     gene_id_column: str = "names",        # column in markers_df holding gene names
     exclude_group_names: list[str] | None = None,
     bin_size: int = 8,                    # used by both phases and assignment
+    # === Marker loading / generation ===
+    marker_method: str = "auto",
+    groupby: str | None = None,
+    sample_col: str | None = None,
+    marker_key: str = "rank_genes_groups",
+    top_n_genes: int = 60,
+    sort_by_column: str = "scores",
+    ascending: bool = False,
+    log2fc_min: float = 0.25,
+    pval_cutoff: float = 0.05,
+    drop_ribosomal: bool = False,
+    drop_mitochondrial: bool = False,
+    table_key=None,
+    preferred_table_keys=None,
+    marker_source=None,
+    scanpy_method: str = "wilcoxon",
+    layer=None,
+    use_raw=None,
+    reference: str = "rest",
+    copy_adata: bool = True,
+    rank_genes_groups_kwargs=None,
+    min_cells_per_group: int = 20,
+    min_replicates_per_condition: int = 2,
+    deseq_alpha: float = 0.05,
+    deseq_n_cpus=None,
+    deseq_quiet: bool = True,
+    deseq_kwargs=None,
+    deseq_stats_kwargs=None,
+    verbose: bool = True,
+    return_result_object: bool = False,
+    return_diagnostics: bool = False,
     # === Phase 1 (priors): common_markers_gene_expression_and_filter ===
     aggregation_method: str = "sum",      # {"sum","mean","median"} supported by your helper funcs
     filtering_algorithm: str = "permutation",  # {"permutation","quantile"}
@@ -55,26 +111,91 @@ def easydecon_workflow(
     fold_change_threshold: float = 2.0,
 
 ):
-    valid_likelihoods = {"row_normalize", "softmax"}
-    if evidence_to_likelihood not in valid_likelihoods:
-        raise ValueError(f"evidence_to_likelihood must be one of {valid_likelihoods}.")
-    if softmax_tau <= 0:
-        raise ValueError("softmax_tau must be greater than 0.")
-    if epsilon <= 0:
-        raise ValueError("epsilon must be greater than 0.")
+    validate_choice(
+        evidence_to_likelihood,
+        EVIDENCE_TO_LIKELIHOOD_METHODS,
+        "evidence_to_likelihood",
+    )
+    validate_positive(softmax_tau, "softmax_tau")
+    validate_positive(epsilon, "epsilon")
     if prior_weight < 0 or likelihood_weight < 0:
         raise ValueError("prior_weight and likelihood_weight must be non-negative.")
 
+    original_celltype = celltype
+    original_gene_id_column = gene_id_column
+    markers_df, marker_diagnostics = read_markers_dataframe(
+        sdata=sdata,
+        filename=filename,
+        adata=adata,
+        markers_df=markers_df,
+        exclude_celltype=None,
+        bin_size=bin_size,
+        top_n_genes=top_n_genes,
+        sort_by_column=sort_by_column,
+        ascending=ascending,
+        gene_id_column=gene_id_column,
+        celltype=celltype,
+        key=marker_key,
+        log2fc_min=log2fc_min,
+        pval_cutoff=pval_cutoff,
+        drop_ribosomal=drop_ribosomal,
+        drop_mitochondrial=drop_mitochondrial,
+        table_key=table_key,
+        preferred_table_keys=preferred_table_keys,
+        source=marker_source,
+        return_diagnostics=True,
+        verbose=verbose,
+        marker_method=marker_method,
+        groupby=groupby,
+        scanpy_method=scanpy_method,
+        layer=layer,
+        use_raw=use_raw,
+        reference=reference,
+        copy_adata=copy_adata,
+        rank_genes_groups_kwargs=rank_genes_groups_kwargs,
+        sample_col=sample_col,
+        min_cells_per_group=min_cells_per_group,
+        min_replicates_per_condition=min_replicates_per_condition,
+        deseq_alpha=deseq_alpha,
+        deseq_n_cpus=deseq_n_cpus,
+        deseq_quiet=deseq_quiet,
+        deseq_kwargs=deseq_kwargs,
+        deseq_stats_kwargs=deseq_stats_kwargs,
+    )
+    if not isinstance(markers_df, pd.DataFrame):
+        raise ValueError("Resolved markers_df must be a pandas DataFrame.")
+    missing_marker_columns = {"group", "names"}.difference(markers_df.columns)
+    if missing_marker_columns:
+        raise ValueError(
+            "Resolved markers_df must contain canonical columns 'group' and "
+            f"'names'. Missing: {sorted(missing_marker_columns)}."
+        )
+    if markers_df["group"].nunique() == 0:
+        raise ValueError("Resolved markers_df contains no marker groups.")
+    if markers_df["names"].nunique() == 0:
+        raise ValueError("Resolved markers_df contains no marker genes.")
+
+    celltype = "group"
+    gene_id_column = "names"
     marker_genes_is_list = isinstance(marker_genes, list)
+    phase1_markers = markers_df if marker_genes is None else marker_genes
+    if isinstance(phase1_markers, pd.DataFrame):
+        phase1_markers = phase1_markers.copy()
+        rename_columns = {}
+        if "group" not in phase1_markers and original_celltype in phase1_markers:
+            rename_columns[original_celltype] = "group"
+        if "names" not in phase1_markers and original_gene_id_column in phase1_markers:
+            rename_columns[original_gene_id_column] = "names"
+        phase1_markers.rename(columns=rename_columns, inplace=True)
 
     # -----------------------
     # Phase 1: Priors
     # -----------------------
     phase1_result = common_markers_gene_expression_and_filter(
         sdata=sdata,
-        marker_genes=markers_df if marker_genes is None else marker_genes,
-        celltype=celltype,
-        gene_id_column=gene_id_column,
+        marker_genes=phase1_markers,
+        celltype="group",
+        gene_id_column="names",
         exclude_group_names=exclude_group_names,
         bin_size=bin_size,
         aggregation_method=aggregation_method,
@@ -89,6 +210,7 @@ def easydecon_workflow(
         quantile=quantile,
         parametric=parametric,
         output_stat=phase1_output_stat,
+        verbose=verbose,
     )
 
     if not isinstance(phase1_result, pd.DataFrame):
@@ -102,17 +224,12 @@ def easydecon_workflow(
 
     prior_row_sums = priors_df.sum(axis=1)
     informative_spots = prior_row_sums[prior_row_sums > 0].index
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
-        try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
-            try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
+    table = get_table(
+        sdata,
+        bin_size=bin_size,
+        table_key=table_key,
+        preferred_table_keys=preferred_table_keys,
+    )
 
     
 
@@ -132,8 +249,8 @@ def easydecon_workflow(
         sdata=sdata,
         markers_df=markers_df,
         bin_size=bin_size,
-        gene_id_column=gene_id_column,
-        celltype=celltype,
+        gene_id_column="names",
+        celltype="group",
         method=method,
         add_to_obs=False,
         #common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
@@ -143,7 +260,8 @@ def easydecon_workflow(
         lambda_param=lambda_param,
         min_markers=min_markers,
         fallback_auc=fallback_auc,
-        expression_threshold=expression_threshold
+        expression_threshold=expression_threshold,
+        verbose=verbose,
     )
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
@@ -216,7 +334,6 @@ def easydecon_workflow(
 
 
     else:
-        print("Regular workflow, phase 1 used to find most likely postions and phase 2 to assign labels")
         posterior_df = None
 
     # -----------------------
@@ -232,10 +349,52 @@ def easydecon_workflow(
         method=assign_method,
         allow_multiple=allow_multiple,
         diagnostic=diagnostic,
-        fold_change_threshold=fold_change_threshold
+        fold_change_threshold=fold_change_threshold,
+        verbose=verbose,
     )
 
 
-    print("Finished!")
-    print("Posterior df and proportions can be None if the required columns or input parameters missing...")
-    return phase1_result, phase2_result, assigned_labels, priors_df, assignment_df
+    diagnostics = {
+        "markers": marker_diagnostics,
+        "n_phase1_spots": int(phase1_result.shape[0]),
+        "n_phase1_celltypes": int(phase1_result.shape[1]),
+        "n_phase2_spots": int(phase2_result.shape[0]),
+        "n_phase2_celltypes": int(phase2_result.shape[1]),
+        "posterior_available": posterior_df is not None,
+        "assignment_matrix": (
+            "posterior_df" if posterior_df is not None else "phase2_result"
+        ),
+        "results_column": results_column,
+        "mask_col": mask_col,
+    }
+
+    if verbose:
+        print("Finished easydecon workflow.")
+        if posterior_df is None:
+            print(
+                "Posterior df is None because marker_genes was provided as a "
+                "list-style mask workflow."
+            )
+
+    if return_result_object:
+        return EasyDeconResult(
+            markers_df=markers_df,
+            phase1_result=phase1_result,
+            phase2_result=phase2_result,
+            assigned_labels=assigned_labels,
+            priors_df=priors_df,
+            likelihoods_df=likelihoods_df,
+            posterior_df=posterior_df,
+            assignment_df=assignment_df,
+            diagnostics=diagnostics,
+        )
+    result_tuple = (
+        phase1_result,
+        phase2_result,
+        assigned_labels,
+        priors_df,
+        assignment_df,
+    )
+    if return_diagnostics:
+        return (*result_tuple, diagnostics)
+    return result_tuple

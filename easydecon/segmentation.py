@@ -7,8 +7,6 @@ import argparse
 import matplotlib.pyplot as plt
 import scanpy as sc
 import numpy as np
-import tensorflow as tf
-import bin2cell as b2c
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 
@@ -55,6 +53,15 @@ def run_bin2cell_segmentation(sample_id,
     min_counts=5,
     out_dir="stardist",
     device="gpu"):
+
+    try:
+        import tensorflow as tf
+        import bin2cell as b2c
+    except ImportError as exc:
+        raise ImportError(
+            "run_bin2cell_segmentation requires the optional bin2cell and "
+            "TensorFlow dependencies. Install them before using this CLI."
+        ) from exc
 
     # Create output directory
     os.makedirs(out_dir, exist_ok=True)

@@ -1,7 +1,8 @@
+import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
-import spatialdata as sd
+import scanpy as sc
 
 import easydecon.extra as extra_module
 from easydecon.config import config, set_batch_size, set_n_jobs
@@ -22,6 +23,7 @@ def _single_thread_config():
 
 @pytest.fixture
 def table_subset():
+    sd = pytest.importorskip("spatialdata")
     sdata = sd.read_zarr("tests/data/sdata_test.zarr")
     return sdata.tables["square_008um"][:500, :].copy()
 
@@ -41,6 +43,80 @@ def workflow_markers():
 
 def _sorted_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_index().sort_index(axis=1)
+
+
+@pytest.fixture
+def small_spatial_table():
+    expression = np.array(
+        [[8.0, 1.0, 4.0, 1.0]] * 6
+        + [[1.0, 8.0, 1.0, 4.0]] * 6,
+        dtype=float,
+    )
+    return ad.AnnData(
+        X=expression,
+        obs=pd.DataFrame(index=[f"spot_{index}" for index in range(12)]),
+        var=pd.DataFrame(index=["G1", "G2", "G3", "G4"]),
+    )
+
+
+@pytest.fixture
+def small_markers():
+    return pd.DataFrame(
+        {
+            "group": ["A", "A", "B", "B"],
+            "names": ["G1", "G3", "G2", "G4"],
+            "scores": [8.0, 4.0, 8.0, 4.0],
+            "logfoldchanges": [2.0, 1.0, 2.0, 1.0],
+            "pvals_adj": [0.001, 0.01, 0.001, 0.01],
+        }
+    )
+
+
+def _small_single_cell_reference():
+    expression = np.log1p(
+        np.array(
+            [[20.0, 1.0, 8.0, 1.0]] * 6
+            + [[1.0, 20.0, 1.0, 8.0]] * 6,
+            dtype=float,
+        )
+    )
+    return ad.AnnData(
+        X=expression,
+        obs=pd.DataFrame(
+            {"cell_type": pd.Categorical(["A"] * 6 + ["B"] * 6)},
+            index=[f"cell_{index}" for index in range(12)],
+        ),
+        var=pd.DataFrame(index=["G1", "G2", "G3", "G4"]),
+    )
+
+
+def _small_pseudobulk_reference():
+    rng = np.random.default_rng(7)
+    rows = []
+    cell_types = []
+    sample_ids = []
+    for sample_index, sample in enumerate(["S1", "S2", "S3"]):
+        for cell_type in ["A", "B"]:
+            for _ in range(5):
+                means = (
+                    [35 + sample_index, 2, 8, 3]
+                    if cell_type == "A"
+                    else [2, 35 + sample_index, 3, 8]
+                )
+                rows.append(rng.poisson(means))
+                cell_types.append(cell_type)
+                sample_ids.append(sample)
+    counts = np.asarray(rows, dtype=int)
+    reference = ad.AnnData(
+        X=np.log1p(counts.astype(float)),
+        obs=pd.DataFrame(
+            {"cell_type": cell_types, "sample_id": sample_ids},
+            index=[f"pb_cell_{index}" for index in range(len(rows))],
+        ),
+        var=pd.DataFrame(index=["G1", "G2", "G3", "G4"]),
+    )
+    reference.layers["counts"] = counts
+    return reference
 
 
 def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
@@ -76,6 +152,9 @@ def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
         method="jaccard",
         results_column="easydecon_test",
         assign_method="max",
+        top_n_genes=None,
+        log2fc_min=-np.inf,
+        pval_cutoff=1.0,
     )
 
     assert calls["phase1"] == 1
@@ -100,3 +179,117 @@ def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
 
     row_sums = priors_df.sum(axis=1)
     assert np.isclose(row_sums[row_sums > 0], 1.0).all()
+
+
+def test_easydecon_workflow_old_tuple_return_with_markers_df(
+    small_spatial_table, small_markers
+):
+    result = extra_module.easydecon_workflow(
+        small_spatial_table,
+        small_markers,
+        filtering_algorithm="quantile",
+        method="jaccard",
+        verbose=False,
+    )
+
+    assert len(result) == 5
+    assert isinstance(result[2], pd.DataFrame)
+
+
+def test_easydecon_workflow_return_result_object(
+    small_spatial_table, small_markers
+):
+    result = extra_module.easydecon_workflow(
+        small_spatial_table,
+        small_markers,
+        filtering_algorithm="quantile",
+        method="jaccard",
+        return_result_object=True,
+        verbose=False,
+    )
+
+    assert isinstance(result, extra_module.EasyDeconResult)
+    for attribute in (
+        "markers_df",
+        "phase1_result",
+        "phase2_result",
+        "priors_df",
+        "likelihoods_df",
+        "assignment_df",
+    ):
+        assert isinstance(getattr(result, attribute), pd.DataFrame)
+    assert {"group", "names"}.issubset(result.markers_df.columns)
+
+
+def test_easydecon_workflow_with_adata_scanpy_markers(small_spatial_table):
+    result = extra_module.easydecon_workflow(
+        sdata=small_spatial_table,
+        adata=_small_single_cell_reference(),
+        groupby="cell_type",
+        marker_method="scanpy",
+        filtering_algorithm="quantile",
+        method="jaccard",
+        return_result_object=True,
+        verbose=False,
+    )
+
+    assert not result.markers_df.empty
+    assert result.posterior_df is not None
+    assert set(result.posterior_df.columns) == set(result.markers_df["group"])
+
+
+def test_easydecon_workflow_with_marker_genes_list_keeps_mask_workflow(
+    small_spatial_table, small_markers
+):
+    result = extra_module.easydecon_workflow(
+        small_spatial_table,
+        small_markers,
+        marker_genes=["G1", "G2"],
+        filtering_algorithm="quantile",
+        method="jaccard",
+        return_result_object=True,
+        verbose=False,
+    )
+
+    assert result.posterior_df is None
+    assert result.assignment_df is result.phase2_result
+
+
+def test_easydecon_workflow_return_diagnostics_tuple(
+    small_spatial_table, small_markers
+):
+    result = extra_module.easydecon_workflow(
+        small_spatial_table,
+        small_markers,
+        filtering_algorithm="quantile",
+        method="jaccard",
+        return_diagnostics=True,
+        verbose=False,
+    )
+
+    assert len(result) == 6
+    diagnostics = result[-1]
+    assert "markers" in diagnostics
+    assert "posterior_available" in diagnostics
+
+
+def test_easydecon_workflow_with_pydeseq2_markers(small_spatial_table):
+    pytest.importorskip("pydeseq2")
+    result = extra_module.easydecon_workflow(
+        sdata=small_spatial_table,
+        adata=_small_pseudobulk_reference(),
+        marker_method="pydeseq2",
+        groupby="cell_type",
+        sample_col="sample_id",
+        layer="counts",
+        min_cells_per_group=5,
+        min_replicates_per_condition=2,
+        deseq_n_cpus=1,
+        filtering_algorithm="quantile",
+        method="jaccard",
+        return_result_object=True,
+        verbose=False,
+    )
+
+    assert not result.markers_df.empty
+    assert result.markers_df["marker_source"].eq("pydeseq2_pseudobulk").all()

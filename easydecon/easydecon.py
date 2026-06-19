@@ -17,8 +17,12 @@ try:
     from spatialdata import match_element_to_table
     import spatialdata_plot
 except ImportError:
-    print("SpatialData not found. You may want to install SpatialData (https://spatialdata.readthedocs.io/en/latest/)")
-    pass
+    warnings.warn(
+        "SpatialData not found. SpatialData-specific plotting/query helpers may "
+        "be unavailable.",
+        ImportWarning,
+        stacklevel=2,
+    )
 
 from scipy.stats import spearmanr
 from scipy.spatial.distance import cosine
@@ -42,6 +46,23 @@ def process_row_with_suppression(row, func, **kwargs):
     return process_row(row, func, **kwargs)
 
 from .config import config
+from ._schema import (
+    MarkerSchema,
+    get_table,
+    resolve_marker_columns,
+    standardize_marker_dataframe,
+)
+from ._validation import (
+    AGGREGATION_METHODS,
+    ASSIGN_METHODS,
+    FILTERING_ALGORITHMS,
+    MARKER_METHODS,
+    PHASE1_OUTPUT_STATS,
+    PYDESEQ2_MARKER_METHODS,
+    SIMILARITY_METHODS,
+    validate_choice,
+    validate_probability_range,
+)
 
 from joblib import Parallel, delayed
 
@@ -80,7 +101,7 @@ def common_markers_gene_expression_and_filter(
     n_subs: int = 5,                 # number of subsamples
     quantile: float = 0.7, #if quantile selected,
     output_stat: str = "expression",  # NEW: {"expression", "minus_log10_p"}
-
+    verbose: bool = True,
     **kwargs
 ) -> pd.DataFrame:
     """
@@ -153,26 +174,34 @@ def common_markers_gene_expression_and_filter(
         The final DataFrame with aggregated + thresholded expression for each group.
         Columns = one per group, indexed by bin.
     """
-    valid_filtering_algorithms = {"permutation", "quantile", "nb"}
-    if filtering_algorithm not in valid_filtering_algorithms:
-        raise ValueError(f"filtering_algorithm must be one of {valid_filtering_algorithms}.")
-    valid_output_stats = {"expression", "minus_log10_p"}
-    if output_stat not in valid_output_stats:
-        raise ValueError(f"output_stat must be one of {valid_output_stats}.")
+    validate_choice(
+        filtering_algorithm, FILTERING_ALGORITHMS, "filtering_algorithm"
+    )
+    validate_choice(output_stat, PHASE1_OUTPUT_STATS, "output_stat")
     if filtering_algorithm == "quantile" and output_stat == "minus_log10_p":
         raise ValueError("output_stat='minus_log10_p' requires filtering_algorithm='permutation' or 'nb'.")
-    if not 0 < alpha < 1:
-        raise ValueError("alpha must be between 0 and 1.")
-    if not 0 <= quantile <= 1:
-        raise ValueError("quantile must be between 0 and 1.")
-    if not 0 <= subsample_signal_quantile < 0.5:
-        raise ValueError("subsample_signal_quantile must be in [0, 0.5).")
-    if not 0 < permutation_gene_pool_fraction <= 1:
-        raise ValueError("permutation_gene_pool_fraction must be between 0 and 1.")
+    validate_probability_range(
+        alpha, "alpha", inclusive_min=False, inclusive_max=False
+    )
+    validate_probability_range(quantile, "quantile")
+    validate_probability_range(
+        subsample_signal_quantile,
+        "subsample_signal_quantile",
+        inclusive_min=True,
+        inclusive_max=False,
+        _maximum=0.5,
+    )
+    validate_probability_range(
+        permutation_gene_pool_fraction,
+        "permutation_gene_pool_fraction",
+        inclusive_min=False,
+        inclusive_max=True,
+    )
     if n_subs < 1:
         raise ValueError("n_subs must be at least 1.")
 
     exclude_group_names = exclude_group_names or []
+    table = get_table(sdata, bin_size=bin_size)
 
     # -----------------------------------------------------------
     # 0) Convert marker_genes input to a dictionary: group -> list of genes
@@ -186,41 +215,35 @@ def common_markers_gene_expression_and_filter(
         group_dict = marker_genes
 
     elif isinstance(marker_genes, pd.DataFrame):
-        # Expect columns group_col and gene_col
-        required_cols = {celltype, gene_id_column}
-        if not required_cols.issubset(marker_genes.columns):
-            raise ValueError(
-                f"DataFrame for marker_genes must have columns: {celltype}, {gene_id_column}."
-            )
-        # Build a dict: group_name -> list_of_genes
-        group_dict = {}
-        marker_genes_tmp = marker_genes.copy()
         try:
-            marker_genes_tmp.index.names=[""]
-        except:
-            pass
-
-        for gname, sub_df in marker_genes_tmp.groupby(celltype):
-            # Extract unique gene names in this group
-            genes_for_gname = sub_df[gene_id_column].unique().tolist()
-            group_dict[gname] = genes_for_gname
+            marker_genes_tmp = standardize_marker_dataframe(
+                marker_genes,
+                schema=MarkerSchema(
+                    group_col=celltype,
+                    gene_col=gene_id_column,
+                ),
+                gene_universe=table.var_names,
+                top_n_genes=None,
+                sort_by_column=None,
+                log2fc_min=-np.inf,
+                pval_cutoff=1.0,
+                source=None,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Could not resolve group and gene columns from marker_genes "
+                "DataFrame."
+            ) from exc
+        group_dict = {
+            group_name: sub_df["names"].drop_duplicates().tolist()
+            for group_name, sub_df in marker_genes_tmp.groupby(
+                marker_genes_tmp["group"], sort=False
+            )
+        }
     else:
         raise TypeError(
             "marker_genes must be a list, dict, or DataFrame with the appropriate columns."
         )
-
-    # 1) Retrieve the table
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
-        try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
-            try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
 
     gene_variability = sparse_var(table.X,axis=0)
     gene_pool_size = max(1, int(permutation_gene_pool_fraction * len(table.var_names)))
@@ -262,8 +285,7 @@ def common_markers_gene_expression_and_filter(
         "cs": composite_score,  # or any custom aggregator
     }
 
-    if aggregation_method not in aggregation_funcs:
-        raise ValueError("aggregation_method must be one of: sum, mean, median or cs.")
+    validate_choice(aggregation_method, AGGREGATION_METHODS, "aggregation_method")
     aggregator = aggregation_funcs[aggregation_method]
 
     tqdm.pandas()
@@ -275,7 +297,8 @@ def common_markers_gene_expression_and_filter(
         filtered_genes = set(gene_list).intersection(table.var_names)
         filtered_genes = list(filtered_genes)
         if not filtered_genes:
-            print(f"Warning: No valid marker genes found for group '{group_name}'.")
+            if verbose:
+                print(f"Warning: No valid marker genes found for group '{group_name}'.")
             # We'll create a column of all zeros
             result_df[group_name] = 0
             continue
@@ -305,7 +328,8 @@ def common_markers_gene_expression_and_filter(
 
             if len(candidate_spots) == 0:
                 # Edge case: if everything was below cutoff
-                print(f"Warning: no bins passed the total_counts quantile filter for {group_name}.")
+                if verbose:
+                    print(f"Warning: no bins passed the total_counts quantile filter for {group_name}.")
                 threshold = 0
             else:
                 all_null_scores = []
@@ -336,7 +360,8 @@ def common_markers_gene_expression_and_filter(
                         #desc=f"Perm sub {i+1}/{n_subs} of {current_subset_size} for {group_name}",
                         desc=f"Subsample {current_subset_size*(i+1)}/{subsample_size} for {group_name}",
                         leave=True,
-                        position=0
+                        position=0,
+                        disable=not verbose,
                     ):
                         random_genes = np.random.choice(
                             gene_pool,
@@ -353,7 +378,8 @@ def common_markers_gene_expression_and_filter(
                 null_scores_concat = np.concatenate(all_null_scores)
                 nonzero_null_vals = null_scores_concat[null_scores_concat > 0]
                 if len(nonzero_null_vals) == 0:
-                    print("Warning: no positive values in null distribution, threshold set to 0.")
+                    if verbose:
+                        print("Warning: no positive values in null distribution, threshold set to 0.")
                     threshold = 0
                 else:
                     if not parametric:
@@ -422,7 +448,7 @@ def common_markers_gene_expression_and_filter(
 
         
         else:
-            raise ValueError("Invalid filtering_algorithm. Use 'quantile' or 'permutation'.")
+            raise RuntimeError("Unexpected filtering_algorithm after validation.")
 
 
         if filtering_algorithm != "nb":
@@ -470,7 +496,8 @@ def common_markers_gene_expression_and_filter(
     # Merge results back into obs if requested
     # -----------------------------------------------------------
     if add_to_obs:
-        print("Adding results to table.obs of sdata object")
+        if verbose:
+            print("Adding results to table.obs of sdata object")
         # Drop existing columns of same names if present
         for col in result_df.columns:
             if col in table.obs.columns:
@@ -492,6 +519,7 @@ def get_clusters_by_similarity_on_tissue(
     #similarity_by_column="logfoldchanges",
     method="wjaccard",
     add_to_obs=False,
+    verbose=True,
     **kwargs,
 ):
     """
@@ -542,27 +570,23 @@ def get_clusters_by_similarity_on_tissue(
         A DataFrame whose index matches `table.obs.index` with cluster 
         assignment columns (or other metrics) computed by the specified method.
     """
+    validate_choice(method, SIMILARITY_METHODS, "method")
     if not isinstance(markers_df, pd.DataFrame):
         raise TypeError("markers_df must be a pandas DataFrame.")
-    if gene_id_column not in markers_df.columns:
-        raise ValueError(f"markers_df must contain gene_id_column '{gene_id_column}'.")
-    if celltype in markers_df.columns:
-        markers_df = markers_df.copy()
-        markers_df[celltype] = markers_df[celltype].astype(str)
-        markers_df.set_index(celltype, inplace=True, drop=False)
-
-    # Try to get the appropriate table from sdata; if not present, treat sdata as the table
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
-        try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
-            try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
+    table = get_table(sdata, bin_size=bin_size)
+    markers_df = standardize_marker_dataframe(
+        markers_df,
+        schema=MarkerSchema(group_col=celltype, gene_col=gene_id_column),
+        gene_universe=table.var_names,
+        top_n_genes=None,
+        sort_by_column=None,
+        log2fc_min=-np.inf,
+        pval_cutoff=1.0,
+        source=None,
+    )
+    celltype = "group"
+    gene_id_column = "names"
+    marker_groups = markers_df["group"].drop_duplicates().tolist()
 
     
     # Enable tqdm progress bar in pandas
@@ -571,10 +595,12 @@ def get_clusters_by_similarity_on_tissue(
 
     # Determine which spots to process
     if common_group_name in table.obs.columns:
-        print(f"Processing spots with {common_group_name} != 0")
+        if verbose:
+            print(f"Processing spots with {common_group_name} != 0")
         spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
     else:
-        print("common_group_name column not found in the table, processing all spots.")
+        if verbose:
+            print("common_group_name column not found in the table, processing all spots.")
         spots_with_expression = table.obs.index
 
     # Select similarity function based on method
@@ -591,17 +617,23 @@ def get_clusters_by_similarity_on_tissue(
         "euclidean": function_row_euclidean,
         "auc": function_row_auc_specific_v2
     }
-    if method not in similarity_methods:
-        raise ValueError(
-            "Invalid method. Choose from: correlation, cosine, jaccard, overlap, "
-            "wjaccard, diagnostic, sum, mean, median, euclidean, auc"
-        )
-
     func = similarity_methods[method]
+    if len(spots_with_expression) == 0:
+        df = pd.DataFrame(0.0, index=table.obs.index, columns=marker_groups)
+        if method != "diagnostic" and add_to_obs:
+            if verbose:
+                print("Adding results to table.obs of sdata object")
+            table.obs.drop(columns=df.columns, inplace=True, errors="ignore")
+            table.obs = pd.merge(
+                table.obs, df, left_index=True, right_index=True, how="left"
+            )
+        return df
+
     # Show parallelization info
     #from .config import config  # Import inside function to prevent issues with joblib reloading
-    print("Number of threads used:", config.n_jobs)
-    print("Batch size:", config.batch_size)
+    if verbose:
+        print("Number of threads used:", config.n_jobs)
+        print("Batch size:", config.batch_size)
 
     # Run computations in parallel
     results = Parallel(
@@ -610,7 +642,13 @@ def get_clusters_by_similarity_on_tissue(
         backend="loky",  # Ensure workers do not inherit unnecessary imports
     )(
         delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
-        for _, row in tqdm(table[spots_with_expression,].to_df().iterrows(), total=len(spots_with_expression),leave=True, position=0)
+        for _, row in tqdm(
+            table[spots_with_expression,].to_df().iterrows(),
+            total=len(spots_with_expression),
+            leave=True,
+            position=0,
+            disable=not verbose,
+        )
     )
 
 
@@ -621,17 +659,15 @@ def get_clusters_by_similarity_on_tissue(
 
     # For spots not processed (e.g., excluded by common_group_name != 0)
     # fill with zeros or NaNs, depending on your needs
-    others_df = pd.DataFrame(
-        0, 
-        index=list(set(table.obs.index) - set(spots_with_expression)), 
-        columns=result_df.columns
-    )
-    df = pd.concat([result_df, others_df])
+    other_spots = table.obs.index[~table.obs.index.isin(spots_with_expression)]
+    others_df = pd.DataFrame(0, index=other_spots, columns=result_df.columns)
+    df = pd.concat([result_df, others_df]).reindex(table.obs.index)
 
 
     # Optionally merge back into table.obs
     if method != "diagnostic" and add_to_obs:
-        print("Adding results to table.obs of sdata object")
+        if verbose:
+            print("Adding results to table.obs of sdata object")
         table.obs.drop(columns=df.columns, inplace=True, errors='ignore')
         table.obs = pd.merge(table.obs, df, left_index=True, right_index=True)
 
@@ -641,6 +677,346 @@ def get_clusters_by_similarity_on_tissue(
 
 
 #this function is used to read the markers from a file or from an single-cell anndata object and return a dataframe
+def _adata_has_rank_genes_groups(adata, key):
+    return hasattr(adata, "uns") and key in adata.uns
+
+
+def _generate_scanpy_rank_genes_groups(
+    adata,
+    groupby,
+    key,
+    scanpy_method="wilcoxon",
+    layer=None,
+    use_raw=None,
+    reference="rest",
+    copy_adata=True,
+    rank_genes_groups_kwargs=None,
+):
+    if groupby is None:
+        raise ValueError(
+            "groupby is required to generate markers from AnnData. Provide the "
+            "obs column containing cell-type or cluster labels."
+        )
+    if not hasattr(adata, "obs") or groupby not in adata.obs.columns:
+        raise ValueError(f"groupby={groupby!r} was not found in adata.obs.columns.")
+
+    kwargs = dict(rank_genes_groups_kwargs or {})
+    try:
+        work_adata = adata.copy() if copy_adata else adata
+        if str(work_adata.obs[groupby].dtype) != "category":
+            work_adata.obs[groupby] = (
+                work_adata.obs[groupby].astype(str).astype("category")
+            )
+        sc.tl.rank_genes_groups(
+            work_adata,
+            groupby=groupby,
+            method=scanpy_method,
+            key_added=key,
+            layer=layer,
+            use_raw=use_raw,
+            reference=reference,
+            **kwargs,
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Could not generate markers with sc.tl.rank_genes_groups. Ensure "
+            "adata contains normalized/log-transformed expression or provide a "
+            "precomputed markers_df/filename."
+        ) from exc
+    return work_adata
+
+
+def _pydeseq2_counts_error():
+    return ValueError(
+        "PyDESeq2 marker generation requires raw non-negative integer counts. "
+        "Provide layer='counts' or another raw-count layer."
+    )
+
+
+def _get_adata_count_matrix(adata, layer="counts"):
+    """Return a cells-by-genes raw-count DataFrame for pseudobulk analysis."""
+    try:
+        if layer is not None:
+            if not hasattr(adata, "layers") or layer not in adata.layers:
+                raise _pydeseq2_counts_error()
+            matrix = adata.layers[layer]
+        else:
+            matrix = adata.X
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise _pydeseq2_counts_error() from exc
+
+    if matrix is None:
+        raise _pydeseq2_counts_error()
+
+    if issparse(matrix):
+        values_to_check = np.asarray(matrix.data)
+    else:
+        values_to_check = np.asarray(matrix)
+
+    try:
+        finite = np.isfinite(values_to_check)
+        if not finite.all():
+            raise _pydeseq2_counts_error()
+        if np.any(values_to_check < 0):
+            raise _pydeseq2_counts_error()
+        nonzero_values = values_to_check[values_to_check != 0]
+        if nonzero_values.size and not np.allclose(
+            nonzero_values, np.round(nonzero_values)
+        ):
+            raise _pydeseq2_counts_error()
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith(
+            "PyDESeq2 marker generation requires"
+        ):
+            raise
+        raise _pydeseq2_counts_error() from exc
+
+    dense_counts = matrix.toarray() if issparse(matrix) else np.asarray(matrix)
+    return pd.DataFrame(
+        dense_counts,
+        index=adata.obs_names,
+        columns=adata.var_names,
+    )
+
+
+def _build_one_vs_rest_pseudobulk(
+    adata,
+    target_group,
+    groupby,
+    sample_col,
+    counts_df,
+    min_cells_per_group=20,
+    min_replicates_per_condition=2,
+):
+    """Aggregate raw counts by biological sample for one-vs-rest testing."""
+    group_values = adata.obs[groupby].astype(str)
+    sample_values = adata.obs[sample_col].astype(str)
+    target_group = str(target_group)
+    pseudobulk_rows = []
+    metadata_rows = []
+
+    for sample in sorted(sample_values.drop_duplicates().tolist()):
+        sample_mask = sample_values == sample
+        condition_masks = {
+            "target": sample_mask & (group_values == target_group),
+            "rest": sample_mask & (group_values != target_group),
+        }
+        for condition, mask in condition_masks.items():
+            cell_ids = adata.obs_names[np.asarray(mask)]
+            if len(cell_ids) < min_cells_per_group:
+                continue
+            row_name = f"{sample}__{target_group}__{condition}"
+            summed = counts_df.loc[cell_ids].sum(axis=0)
+            summed.name = row_name
+            pseudobulk_rows.append(summed)
+            metadata_rows.append((row_name, condition))
+
+    if pseudobulk_rows:
+        counts_pb = pd.DataFrame(pseudobulk_rows, columns=counts_df.columns)
+        metadata_pb = pd.DataFrame(
+            metadata_rows, columns=["pseudobulk_sample", "condition"]
+        ).set_index("pseudobulk_sample")
+        metadata_pb.index.name = counts_pb.index.name
+    else:
+        counts_pb = pd.DataFrame(columns=counts_df.columns)
+        metadata_pb = pd.DataFrame(columns=["condition"])
+
+    condition_counts = (
+        metadata_pb["condition"].value_counts() if not metadata_pb.empty else {}
+    )
+    n_target = int(condition_counts.get("target", 0))
+    n_rest = int(condition_counts.get("rest", 0))
+    stats = {
+        "n_target_replicates": n_target,
+        "n_rest_replicates": n_rest,
+        "skipped": False,
+    }
+    if (
+        n_target < min_replicates_per_condition
+        or n_rest < min_replicates_per_condition
+    ):
+        stats["skipped"] = True
+        stats["reason"] = (
+            "Insufficient pseudobulk replicates after cell-count filtering: "
+            f"target={n_target}, rest={n_rest}, required="
+            f"{min_replicates_per_condition} per condition."
+        )
+        return (
+            pd.DataFrame(columns=counts_df.columns),
+            pd.DataFrame(columns=["condition"]),
+            stats,
+        )
+
+    return counts_pb, metadata_pb, stats
+
+
+def _instantiate_pydeseq2_with_fallback(
+    constructor,
+    *args,
+    quiet=True,
+    n_cpus=None,
+    **kwargs,
+):
+    attempts = [
+        {"quiet": quiet, "n_cpus": n_cpus},
+        {"n_cpus": n_cpus},
+        {"quiet": quiet},
+        {},
+    ]
+    last_error = None
+    for optional_kwargs in attempts:
+        call_kwargs = dict(kwargs)
+        for name, value in optional_kwargs.items():
+            if name not in call_kwargs:
+                call_kwargs[name] = value
+        try:
+            return constructor(*args, **call_kwargs)
+        except TypeError as exc:
+            last_error = exc
+    raise last_error
+
+
+def _run_pydeseq2_one_vs_rest(
+    counts_pb,
+    metadata_pb,
+    condition_col="condition",
+    tested_level="target",
+    reference_level="rest",
+    alpha=0.05,
+    n_cpus=None,
+    quiet=True,
+    deseq_kwargs=None,
+    deseq_stats_kwargs=None,
+):
+    """Fit one PyDESeq2 target-vs-rest pseudobulk contrast."""
+    try:
+        from pydeseq2.dds import DeseqDataSet
+        from pydeseq2.ds import DeseqStats
+    except ImportError as exc:
+        raise ImportError(
+            "marker_method='pydeseq2' requires pydeseq2. Install it with "
+            "`pip install pydeseq2`."
+        ) from exc
+
+    dds = _instantiate_pydeseq2_with_fallback(
+        DeseqDataSet,
+        counts=counts_pb,
+        metadata=metadata_pb,
+        design_factors=condition_col,
+        quiet=quiet,
+        n_cpus=n_cpus,
+        **dict(deseq_kwargs or {}),
+    )
+    dds.deseq2()
+    stat_res = _instantiate_pydeseq2_with_fallback(
+        DeseqStats,
+        dds,
+        contrast=[condition_col, tested_level, reference_level],
+        alpha=alpha,
+        quiet=quiet,
+        n_cpus=n_cpus,
+        **dict(deseq_stats_kwargs or {}),
+    )
+    stat_res.summary()
+    results_df = getattr(stat_res, "results_df", None)
+    if results_df is None:
+        raise ValueError("PyDESeq2 did not provide a results_df table.")
+    return results_df
+
+
+def compute_pseudobulk_deseq_markers(
+    adata,
+    groupby,
+    sample_col,
+    layer="counts",
+    min_cells_per_group=20,
+    min_replicates_per_condition=2,
+    alpha=0.05,
+    n_cpus=None,
+    quiet=True,
+    deseq_kwargs=None,
+    deseq_stats_kwargs=None,
+):
+    """Generate one-vs-rest pseudobulk marker tables with PyDESeq2."""
+    if groupby is None:
+        raise ValueError("groupby is required for pseudobulk PyDESeq2 markers.")
+    if not hasattr(adata, "obs") or groupby not in adata.obs.columns:
+        raise ValueError(f"groupby={groupby!r} was not found in adata.obs.columns.")
+    if sample_col is None:
+        raise ValueError("sample_col is required for pseudobulk PyDESeq2 markers.")
+    if sample_col not in adata.obs.columns:
+        raise ValueError(f"sample_col={sample_col!r} was not found in adata.obs.columns.")
+
+    counts_df = _get_adata_count_matrix(adata, layer=layer)
+    groups = sorted(adata.obs[groupby].astype(str).unique().tolist())
+    diagnostics = {
+        "method": "pydeseq2_pseudobulk",
+        "groupby": groupby,
+        "sample_col": sample_col,
+        "layer": layer,
+        "groups_attempted": groups,
+        "groups_completed": [],
+        "groups_skipped": {},
+        "min_cells_per_group": min_cells_per_group,
+        "min_replicates_per_condition": min_replicates_per_condition,
+    }
+    marker_tables = []
+
+    for target_group in groups:
+        counts_pb, metadata_pb, group_stats = _build_one_vs_rest_pseudobulk(
+            adata,
+            target_group=target_group,
+            groupby=groupby,
+            sample_col=sample_col,
+            counts_df=counts_df,
+            min_cells_per_group=min_cells_per_group,
+            min_replicates_per_condition=min_replicates_per_condition,
+        )
+        if group_stats["skipped"]:
+            diagnostics["groups_skipped"][target_group] = group_stats
+            continue
+
+        results = _run_pydeseq2_one_vs_rest(
+            counts_pb,
+            metadata_pb,
+            alpha=alpha,
+            n_cpus=n_cpus,
+            quiet=quiet,
+            deseq_kwargs=deseq_kwargs,
+            deseq_stats_kwargs=deseq_stats_kwargs,
+        ).copy()
+        required_results = {"log2FoldChange", "padj"}
+        if not required_results.issubset(results.columns):
+            missing = sorted(required_results.difference(results.columns))
+            raise ValueError(
+                f"PyDESeq2 results are missing required columns: {missing}."
+            )
+        results["group"] = target_group
+        results["names"] = results.index.astype(str)
+        results["logfoldchanges"] = results["log2FoldChange"]
+        results["pvals_adj"] = results["padj"]
+        if "stat" in results.columns:
+            results["scores"] = pd.to_numeric(
+                results["stat"], errors="coerce"
+            ).abs()
+        else:
+            adjusted = pd.to_numeric(results["padj"], errors="coerce")
+            results["scores"] = -np.log10(
+                adjusted.clip(lower=np.finfo(float).tiny)
+            )
+        marker_tables.append(results.reset_index(drop=True))
+        diagnostics["groups_completed"].append(target_group)
+
+    if not marker_tables:
+        raise ValueError(
+            "No groups produced pseudobulk PyDESeq2 markers. Skipped group "
+            f"diagnostics: {diagnostics['groups_skipped']}"
+        )
+    return pd.concat(marker_tables, ignore_index=True), diagnostics
+
+
 def read_markers_dataframe(sdata,
                            filename=None,
                            adata=None,
@@ -655,18 +1031,40 @@ def read_markers_dataframe(sdata,
                            log2fc_min=0.25,
                            pval_cutoff=0.05,
                            drop_ribosomal=False,
-                           drop_mitochondrial=False):
+                           drop_mitochondrial=False,
+                           markers_df=None,
+                           table_key=None,
+                           preferred_table_keys=None,
+                           source=None,
+                           return_diagnostics=False,
+                           verbose=True,
+                           marker_method="auto",
+                           groupby=None,
+                           scanpy_method="wilcoxon",
+                           layer=None,
+                           use_raw=None,
+                           reference="rest",
+                           copy_adata=True,
+                           rank_genes_groups_kwargs=None,
+                           sample_col=None,
+                           min_cells_per_group=20,
+                           min_replicates_per_condition=2,
+                           deseq_alpha=0.05,
+                           deseq_n_cpus=None,
+                           deseq_quiet=True,
+                           deseq_kwargs=None,
+                           deseq_stats_kwargs=None):
     """
     Reads and processes marker genes data for spatial transcriptomics analysis.
 
-    This function can read marker genes data either from a file or from an AnnData object,
-    and processes it to create a filtered and sorted DataFrame of marker genes.
+    This function can read marker genes from a DataFrame, file, or an existing
+    ``rank_genes_groups`` result and returns canonical marker columns.
 
     Parameters:
     -----------
     sdata : SpatialData object
         The spatial data object containing the spatial transcriptomics data.
-    filename : str, optional
+    filename : path-like, optional
         Path to the input file containing marker genes data (CSV or Excel format).
         Required if `adata` is not provided.
     adata : AnnData object, optional
@@ -710,6 +1108,52 @@ def read_markers_dataframe(sdata,
         Whether to remove mitochondrial genes before final selection.
         Removes genes starting with MT- or mt-.
         Default: False
+    markers_df : pandas.DataFrame, optional
+        Marker DataFrame to process directly. Takes priority over ``filename``
+        and ``adata``.
+    table_key : str, optional
+        Explicit key of the spatial table in ``sdata.tables``.
+    preferred_table_keys : sequence of str, optional
+        Additional spatial table keys to try before the standard keys.
+    source : str, optional
+        Source label to attach to the returned markers.
+    return_diagnostics : bool, optional
+        If True, return ``(df, diagnostics)``.
+    verbose : bool, optional
+        If True, print the detected cell types.
+    marker_method : {"auto", "existing", "scanpy", "pydeseq2", "deseq2", "pseudobulk_deseq2"}, optional
+        How to obtain markers from ``adata``. PyDESeq2 modes always generate
+        one-vs-rest pseudobulk markers, even when ``key`` already exists.
+    groupby : str, optional
+        Column in ``adata.obs`` used to generate Scanpy markers.
+    scanpy_method : str, optional
+        Differential-expression method passed to Scanpy.
+    layer : str, optional
+        AnnData layer passed to Scanpy.
+    use_raw : bool, optional
+        Whether Scanpy should use ``adata.raw``.
+    reference : str, optional
+        Reference group passed to Scanpy.
+    copy_adata : bool, optional
+        Generate markers on a copy rather than mutating the input AnnData.
+    rank_genes_groups_kwargs : dict, optional
+        Additional keyword arguments passed to ``sc.tl.rank_genes_groups``.
+    sample_col : str, optional
+        Biological-sample column used for pseudobulk replication.
+    min_cells_per_group : int, optional
+        Minimum cells contributing to each pseudobulk sample-condition row.
+    min_replicates_per_condition : int, optional
+        Minimum retained pseudobulk replicates for both target and rest.
+    deseq_alpha : float, optional
+        Significance level passed to ``DeseqStats``.
+    deseq_n_cpus : int, optional
+        CPU count passed to PyDESeq2 when supported.
+    deseq_quiet : bool, optional
+        Suppress PyDESeq2 progress output when supported.
+    deseq_kwargs : dict, optional
+        Additional arguments passed to ``DeseqDataSet``.
+    deseq_stats_kwargs : dict, optional
+        Additional arguments passed to ``DeseqStats``.
 
     Returns:
     --------
@@ -720,8 +1164,7 @@ def read_markers_dataframe(sdata,
     Raises:
     ------
     ValueError
-        If neither `filename` nor `adata` is provided.
-        If invalid `adata` object is provided.
+        If no marker input is provided or an input cannot be read.
 
     Notes:
     -----
@@ -729,62 +1172,182 @@ def read_markers_dataframe(sdata,
     - Genes are filtered based on log2 fold change and adjusted p-value thresholds.
     - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
     """
-    exclude_celltype = exclude_celltype or []
+    validate_choice(marker_method, MARKER_METHODS, "marker_method")
 
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
+    generated_rank_genes_groups = False
+    generated_pseudobulk_deseq = False
+    deseq_diagnostics = None
+    table = get_table(
+        sdata,
+        bin_size=bin_size,
+        table_key=table_key,
+        preferred_table_keys=preferred_table_keys,
+    )
+
+    if markers_df is not None:
+        raw_df = markers_df
+        resolved_source = source if source is not None else "dataframe"
+    elif filename is not None:
         try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
+            raw_df = pd.read_csv(filename)
+        except Exception:
             try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
-
-
-    if adata is None:
-        if filename is None:
-            raise ValueError("Please provide a filename or an adata object")
+                raw_df = pd.read_excel(filename)
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not read marker file {filename!r} as CSV or Excel."
+                ) from exc
+        resolved_source = source if source is not None else "file"
+    elif adata is not None:
+        if marker_method in PYDESEQ2_MARKER_METHODS:
+            raw_df, deseq_diagnostics = compute_pseudobulk_deseq_markers(
+                adata,
+                groupby=groupby,
+                sample_col=sample_col,
+                layer=layer,
+                min_cells_per_group=min_cells_per_group,
+                min_replicates_per_condition=min_replicates_per_condition,
+                alpha=deseq_alpha,
+                n_cpus=deseq_n_cpus,
+                quiet=deseq_quiet,
+                deseq_kwargs=deseq_kwargs,
+                deseq_stats_kwargs=deseq_stats_kwargs,
+            )
+            generated_pseudobulk_deseq = True
+            resolved_source = (
+                source if source is not None else "pydeseq2_pseudobulk"
+            )
         else:
+            if _adata_has_rank_genes_groups(adata, key):
+                marker_adata = adata
+                source_detail = f"adata.uns[{key!r}]"
+            elif marker_method == "existing":
+                raise ValueError(
+                    f"Could not read markers from adata.uns[{key!r}]. Run "
+                    "sc.tl.rank_genes_groups first, set marker_method='scanpy' "
+                    "with groupby=..., or provide markers_df/filename."
+                )
+            else:
+                marker_adata = _generate_scanpy_rank_genes_groups(
+                    adata,
+                    groupby=groupby,
+                    key=key,
+                    scanpy_method=scanpy_method,
+                    layer=layer,
+                    use_raw=use_raw,
+                    reference=reference,
+                    copy_adata=copy_adata,
+                    rank_genes_groups_kwargs=rank_genes_groups_kwargs,
+                )
+                generated_rank_genes_groups = True
+                source_detail = f"scanpy_generated[{key!r}]"
             try:
-                df=pd.read_csv(filename,dtype={gene_id_column:str,celltype:str})
-            except:
-                df=pd.read_excel(filename,dtype={gene_id_column:str,celltype:str})
+                raw_df = sc.get.rank_genes_groups_df(
+                    marker_adata,
+                    group=None,
+                    key=key,
+                    pval_cutoff=None,
+                    log2fc_min=None,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not read markers from adata.uns[{key!r}]. "
+                    "Run sc.tl.rank_genes_groups first or provide "
+                    "markers_df/filename."
+                ) from exc
+            resolved_source = source if source is not None else source_detail
     else:
-        try:
-            df=sc.get.rank_genes_groups_df(adata,group=None, key=key, pval_cutoff=pval_cutoff, log2fc_min=log2fc_min)
-        except:
-            raise ValueError("Please provide a valid adata object with rank_genes_groups key")
-            
-    if "logfoldchanges" in df.columns:
-        df=df[df["logfoldchanges"] >= log2fc_min]
-    if "pvals_adj" in df.columns:
-        df=df[df["pvals_adj"] <= pval_cutoff]
+        raise ValueError(
+            "Please provide markers_df, filename, or an adata object with an "
+            "existing rank_genes_groups result."
+        )
 
-    # Optional gene family filtering
-    if drop_ribosomal:
-        gene_upper = df[gene_id_column].str.upper()
-        df = df[~gene_upper.str.startswith(("RPS", "RPL"))]
+    schema = MarkerSchema(
+        group_col=celltype,
+        gene_col=gene_id_column,
+        lfc_col="logfoldchanges",
+        padj_col="pvals_adj",
+        score_col="scores",
+    )
 
-    if drop_mitochondrial:
-        gene_upper = df[gene_id_column].str.upper()
-        df = df[~gene_upper.str.startswith("MT-")]
+    # ``scores`` is the historical default, but not every valid marker format
+    # provides a score. In that case use the standard metric preference.
+    effective_sort_column = sort_by_column
+    resolved_columns = resolve_marker_columns(raw_df, schema=schema)
+    if sort_by_column == "scores" and "scores" not in resolved_columns:
+        effective_sort_column = None
 
-    df = df[df[gene_id_column].isin(table.var_names)] #check if the var_names are present in the spatial data
-    df = df[~df[celltype].isin(exclude_celltype)]
-    df = df.sort_values(by=sort_by_column, ascending=ascending)
-    df = df.drop_duplicates(subset=[celltype, gene_id_column], keep='first')
-    df = df.groupby(celltype).head(top_n_genes)
-    print("Unique cell types detected in the dataframe:")
-    print(df[celltype].unique())
-    df.set_index(celltype,inplace=True,drop=False)
+    df = standardize_marker_dataframe(
+        raw_df,
+        schema=schema,
+        gene_universe=table.var_names,
+        exclude_celltype=exclude_celltype,
+        top_n_genes=top_n_genes,
+        sort_by_column=effective_sort_column,
+        ascending=ascending,
+        log2fc_min=log2fc_min,
+        pval_cutoff=pval_cutoff,
+        drop_ribosomal=drop_ribosomal,
+        drop_mitochondrial=drop_mitochondrial,
+        source=resolved_source,
+    )
+
+    used_adata = markers_df is None and filename is None and adata is not None
+    generated_rank_genes_groups = generated_rank_genes_groups if used_adata else False
+    generated_pseudobulk_deseq = (
+        generated_pseudobulk_deseq if used_adata else False
+    )
+
+    if verbose and generated_rank_genes_groups:
+        print(
+            "Generated marker genes using sc.tl.rank_genes_groups with "
+            f"groupby={groupby!r}, method={scanpy_method!r}."
+        )
+    if verbose and generated_pseudobulk_deseq:
+        print(
+            "Generated marker genes using pseudobulk PyDESeq2 with "
+            f"groupby={groupby!r}, sample_col={sample_col!r}."
+        )
+    if verbose:
+        print("Unique cell types detected in the dataframe:")
+        print(df["group"].unique())
+
+    if return_diagnostics:
+        diagnostics = {
+            "source": resolved_source,
+            "n_markers": int(df.shape[0]),
+            "n_celltypes": int(df["group"].nunique()),
+            "celltypes": df["group"].drop_duplicates().tolist(),
+            "marker_counts_per_celltype": (
+                df.groupby(df["group"]).size().to_dict()
+            ),
+            "n_spatial_genes": int(len(table.var_names)),
+            "marker_method": marker_method,
+            "groupby": groupby,
+            "generated_rank_genes_groups": generated_rank_genes_groups,
+            "rank_genes_groups_key": key,
+            "scanpy_method": scanpy_method if used_adata else None,
+            "generated_pseudobulk_deseq": generated_pseudobulk_deseq,
+            "pseudobulk_deseq": deseq_diagnostics,
+        }
+        return df, diagnostics
+
     return df
 
 
 
-def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", method="max", allow_multiple=False, diagnostic=None, fold_change_threshold=2.0, add_to_obs=True):
+def assign_clusters_from_df(
+    sdata,
+    df,
+    bin_size=8,
+    results_column="easydecon",
+    method="max",
+    allow_multiple=False,
+    diagnostic=None,
+    fold_change_threshold=2.0,
+    add_to_obs=True,
+    verbose=True,
+):
     """
     Assigns cell clusters to spatial spots based on deconvolution results.
 
@@ -819,6 +1382,9 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
     fold_change_threshold : float, optional
         Threshold for fold change filtering.
         Default: 2.0
+    verbose : bool, optional
+        Whether to print assignment progress messages.
+        Default: True
 
     Returns:
     --------
@@ -839,21 +1405,12 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
       characteristics and use cases.
     """
 
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
-        try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
-            try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
-
+    validate_choice(method, ASSIGN_METHODS, "method")
+    table = get_table(sdata, bin_size=bin_size)
+    df_filtered = df.reindex(table.obs.index).fillna(0)
+    if df_filtered.shape[1] == 0:
+        raise ValueError("df must contain at least one score/proportion column.")
     table.obs.drop(columns=[results_column], inplace=True, errors='ignore')
-
-    df_filtered = df.loc[table.obs.index]
 
     def softmax(row, **kwargs):
         v = row.to_numpy(dtype=float)
@@ -880,7 +1437,7 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
     elif method == "hybrid":
         # row-wise zscore
-        if allow_multiple:
+        if allow_multiple and verbose:
             print("Multiple assignments per spot allowed, so hybrid assignment method is selected...")
         row_is_all_zero_or_nan = ~np.isfinite(df_filtered).any(axis=1) | (df_filtered.replace(0, np.nan).isna().all(axis=1))
         informative_mask = ~row_is_all_zero_or_nan
@@ -921,13 +1478,20 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
                 return np.nan
 
         assigned_clusters = []
-        for _, row in tqdm(adaptive_probs.iterrows(), total=adaptive_probs.shape[0], desc="Assigning clusters", leave=True,position=0):
+        for _, row in tqdm(
+            adaptive_probs.iterrows(),
+            total=adaptive_probs.shape[0],
+            desc="Assigning clusters",
+            leave=True,
+            position=0,
+            disable=not verbose,
+        ):
             assigned_clusters.append(adaptive_assign(row))
 
         df_reindexed = pd.DataFrame(assigned_clusters, index=adaptive_probs.index, columns=[results_column]).astype('category').reindex(table.obs.index, fill_value=np.nan)
 
     else:
-        raise ValueError("Please provide a valid method: max, zmax, or hybrid")
+        raise ValueError("allow_multiple=True requires method='hybrid'.")
 
 
     if allow_multiple and method == "hybrid":
@@ -937,7 +1501,8 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
         df_reindexed = tmp.astype('category').reindex(table.obs.index)
 
     if add_to_obs:
-        print("Adding results to table.obs of sdata object")
+        if verbose:
+            print("Adding results to table.obs of sdata object")
         table.obs.drop(
             columns=df_reindexed.columns,
             inplace=True, errors='ignore'
@@ -954,25 +1519,21 @@ def assign_clusters_from_df(sdata, df, bin_size=8, results_column="easydecon", m
 
 
 def visualize_only_selected_clusters(sdata,clusters,bin_size=8,results_column="easydecon",temp_column="tmp"):
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
-        try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
-            try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
+    table = get_table(sdata, bin_size=bin_size)
 
     table.obs.drop(columns=[temp_column],inplace=True,errors='ignore')
     #table.obs=pd.merge(table.obs, df.idxmax(axis=1).to_frame(results_column).astype('category'), left_index=True, right_index=True)
     table.obs[temp_column]=table.obs[results_column].apply(lambda x: x if x in clusters else np.nan)
     return
 
-def plot_assigned_clusters_from_dataframe(sdata,dataframe,sample_id,bin_size=8,title="Assigned Clusters",cmap="tab20",legend_fontsize=8,figsize=(5,5),dpi=200,method="matplotlib",scale=1):
-    assign_clusters_from_df(sdata,df=dataframe,bin_size=8,results_column="plotted_clusters")
+def plot_assigned_clusters_from_dataframe(sdata,dataframe,sample_id,bin_size=8,title="Assigned Clusters",cmap="tab20",legend_fontsize=8,figsize=(5,5),dpi=200,method="matplotlib",scale=1,verbose=True):
+    assign_clusters_from_df(
+        sdata,
+        df=dataframe,
+        bin_size=8,
+        results_column="plotted_clusters",
+        verbose=verbose,
+    )
     
     sdata.pl.render_images("queried_cytassist").pl.render_shapes(
         f"{sample_id}_square_{bin_size:03}um", color="plotted_clusters",cmap=cmap,method=method,scale=scale
@@ -1026,13 +1587,22 @@ def function_row_spearman(row, markers_df,**kwargs):
         l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
         valid_mask = ~vector_series.isna() & ~row.isna()
+        if int(valid_mask.sum()) < 2:
+            a[c] = 0.0
+            continue
+        if (
+            row[valid_mask].nunique(dropna=True) < 2
+            or vector_series[valid_mask].nunique(dropna=True) < 2
+        ):
+            a[c] = 0.0
+            continue
         t = (row[valid_mask] != 0).sum()
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
             #sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l)**penalty_param)
             sp = (spearmanr(row[valid_mask], vector_series[valid_mask], nan_policy="omit")[0])*((t/l))
-            a[c] = sp if sp > 0 else 0.0  # Assign 0 if correlation is negative
+            a[c] = sp if np.isfinite(sp) and sp > 0 else 0.0
     return a
 
 
@@ -1051,14 +1621,21 @@ def function_row_cosine(row, markers_df,**kwargs):
         vector_series = pd.Series(markers_df[[gene_id_column,similarity_by_column]].loc[[c]][similarity_by_column].values, index=markers_df[[gene_id_column, similarity_by_column]].loc[[c]][gene_id_column].values)
         l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
-        vector_series = min_max_scale(vector_series)
         valid_mask = ~vector_series.isna() & ~row.isna()
+        if int(valid_mask.sum()) < 2:
+            a[c] = 0.0
+            continue
+        vector_values = min_max_scale(vector_series[valid_mask])
+        if np.linalg.norm(vector_values.to_numpy(dtype=float)) == 0:
+            a[c] = 0.0
+            continue
         t = (row[valid_mask] != 0).sum()
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
             #a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))*((t/l)**penalty_param) #penalize the cosine similarity by the fraction of valid pairs
-            a[c] = (1 - cosine(row[valid_mask], vector_series[valid_mask]))
+            score = 1 - cosine(row[valid_mask], vector_values)
+            a[c] = float(score) if np.isfinite(score) else 0.0
     return a
 
 
@@ -1077,8 +1654,11 @@ def function_row_euclidean(row, markers_df, **kwargs):
         )
         l = len(vector_series)
         vector_series = vector_series.reindex(row.index, fill_value=np.nan)
-        vector_series = min_max_scale(vector_series)
         valid_mask = ~vector_series.isna() & ~row.isna()
+        if int(valid_mask.sum()) < 1:
+            a[c] = 0.0
+            continue
+        vector_values = min_max_scale(vector_series[valid_mask])
         
         # Number of non-zero valid entries
         t = (row[valid_mask] != 0).sum()
@@ -1086,14 +1666,14 @@ def function_row_euclidean(row, markers_df, **kwargs):
         if t == 0:  # No valid pairs
             a[c] = 0.0
         else:
-            distance_val = euclidean(row[valid_mask], vector_series[valid_mask])
+            distance_val = euclidean(row[valid_mask], vector_values)
             
             # Convert Euclidean distance to similarity in [0,1]: higher distance -> lower similarity
             similarity_val = 1 / (1 + distance_val)
             
             # Apply the penalty factor
             #a[c] = similarity_val * ((t / l) ** penalty_param)
-            a[c] = similarity_val
+            a[c] = float(similarity_val) if np.isfinite(similarity_val) else 0.0
     
     return a
 
@@ -1456,7 +2036,8 @@ def function_row_sum(row, markers_df, **kwargs):
         
         # Calculate intersection and union
         #a[c] = row_set.intersection(vector_set)
-        a[c] = row[vector_set].sum()
+        values = row.reindex(vector_set)
+        a[c] = float(values.fillna(0.0).sum())
     return a
 
 def function_row_mean(row, markers_df, **kwargs):
@@ -1470,7 +2051,11 @@ def function_row_mean(row, markers_df, **kwargs):
         
         # Calculate intersection and union
         #a[c] = row_set.intersection(vector_set)
-        a[c] = row[vector_set].mean()
+        values = row.reindex(vector_set)
+        if len(vector_set) == 0 or values.notna().sum() == 0:
+            a[c] = 0.0
+        else:
+            a[c] = float(values.fillna(0.0).mean())
     return a
 
 def function_row_median(row, markers_df, **kwargs):
@@ -1483,7 +2068,11 @@ def function_row_median(row, markers_df, **kwargs):
         
         # Calculate intersection and union
         #a[c] = row_set.intersection(vector_set)
-        a[c] = row[vector_set].median()
+        values = row.reindex(vector_set)
+        if len(vector_set) == 0 or values.notna().sum() == 0:
+            a[c] = 0.0
+        else:
+            a[c] = float(values.fillna(0.0).median())
     return a
 
 
@@ -1501,6 +2090,8 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         #target_weights = target_genes / target_genes.sum() #L1 normalization
     else:
         target_weights = target_genes  # Will be an empty Series
+    if target_weights.index.has_duplicates:
+        target_weights = target_weights.groupby(level=0).max()
     
     # Determine if pre-calculated weights are to be used
     use_precalculated_weights = weight_column is not None and weight_column in markers_df.columns
@@ -1535,6 +2126,9 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
             # Create a pandas Series with weights assigned to genes
             cluster_weights = pd.Series(weights, index=cluster_genes)
 
+        if cluster_weights.index.has_duplicates:
+            cluster_weights = cluster_weights.groupby(level=0).max()
+
         
         # Union of genes in 'cluster_weights' and 'target_weights'
         all_genes = set(cluster_weights.index).union(target_weights.index)
@@ -1563,23 +2157,24 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
 
 
 
-def add_df_to_spatialdata(sdata,df,bin_size=8):
-    try:
-        table = sdata.tables["cell_segmentations"]
-    except (AttributeError, KeyError):
-        try:
-            table_name = f"square_{bin_size:03}um"
-            table = sdata.tables[table_name]
-        except (AttributeError, KeyError):
-            try:
-                table = sdata.tables["table"]
-            except (AttributeError, KeyError):
-                table = sdata
+def add_df_to_spatialdata(sdata,df,bin_size=8,verbose=True):
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame.")
 
-    table.obs.drop(columns=df.columns,inplace=True,errors='ignore')
-    table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    print("DataFrame added to SpatialData object")
-    print(df.columns)
+    table = get_table(sdata, bin_size=bin_size)
+    df_to_add = df.reindex(table.obs.index)
+    table.obs.drop(columns=df_to_add.columns,inplace=True,errors='ignore')
+    table.obs = pd.merge(
+        table.obs,
+        df_to_add,
+        left_index=True,
+        right_index=True,
+        how="left",
+        sort=False,
+    )
+    if verbose:
+        print("DataFrame added to SpatialData object")
+        print(df.columns)
     return
 
 def test_function():

@@ -1,7 +1,43 @@
+import pandas as pd
+
+from ._schema import get_table
+
+
+def _resolve_posterior_dataframe(
+    posterior_like,
+    use_assignment_if_no_posterior=False,
+):
+    """Resolve a posterior matrix from a DataFrame or result-like object."""
+    if isinstance(posterior_like, pd.DataFrame):
+        return posterior_like
+    if hasattr(posterior_like, "posterior_df"):
+        if posterior_like.posterior_df is not None:
+            return posterior_like.posterior_df
+        if (
+            use_assignment_if_no_posterior
+            and hasattr(posterior_like, "assignment_df")
+            and posterior_like.assignment_df is not None
+        ):
+            return posterior_like.assignment_df
+        raise ValueError(
+            "EasyDeconResult does not contain posterior_df. This usually happens "
+            "when marker_genes was provided as a list-style mask workflow. Pass "
+            "use_assignment_if_no_posterior=True to use assignment_df/phase2 "
+            "scores instead."
+        )
+    raise TypeError(
+        "posterior_df must be a pandas DataFrame or an EasyDeconResult-like "
+        "object with posterior_df."
+    )
+
+
 def detect_spatial_niches_from_posteriors(
     sdata,
     posterior_df,
     bin_size: int = 8,
+    table_key=None,
+    preferred_table_keys=None,
+    use_assignment_if_no_posterior: bool = False,
     n_neighbors: int = 6,
     n_niches: int = 5,
     auto_n_niches: bool = False,
@@ -84,22 +120,20 @@ def detect_spatial_niches_from_posteriors(
           - "selection_metric"
     """
     import numpy as np
-    import pandas as pd
     from sklearn.neighbors import NearestNeighbors
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
 
-    # -------------------------
-    # 1) Get spatial table
-    # -------------------------
-    try:
-        table_name = f"square_{bin_size:03}um"
-        table = sdata.tables[table_name]
-    except (AttributeError, KeyError):
-        try:
-            table = sdata.tables["table"]
-        except (AttributeError, KeyError):
-            table = sdata  # assume sdata itself is an AnnData-like table
+    posterior_df = _resolve_posterior_dataframe(
+        posterior_df,
+        use_assignment_if_no_posterior=use_assignment_if_no_posterior,
+    )
+    table = get_table(
+        sdata,
+        bin_size=bin_size,
+        table_key=table_key,
+        preferred_table_keys=preferred_table_keys,
+    )
 
     # -------------------------
     # 2) Align indices
@@ -107,14 +141,31 @@ def detect_spatial_niches_from_posteriors(
     if not isinstance(posterior_df, pd.DataFrame):
         raise TypeError("posterior_df must be a pandas DataFrame (spots x cell types).")
 
-    common_index = table.obs.index.intersection(posterior_df.index)
+    common_index = table.obs.index[table.obs.index.isin(posterior_df.index)]
     if len(common_index) == 0:
         raise ValueError(
             "No overlapping spot IDs between table.obs.index and posterior_df.index."
         )
 
     post = posterior_df.loc[common_index].copy()
-    post = post.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    post = post.apply(pd.to_numeric, errors="coerce")
+    post = post.replace([np.inf, -np.inf], np.nan)
+    finite_columns = post.notna().any(axis=0)
+    if not finite_columns.any():
+        raise ValueError("posterior_df contains no usable numeric cell-type columns.")
+    post = post.loc[:, finite_columns]
+    if not post.fillna(0.0).ne(0).to_numpy().any():
+        raise ValueError(
+            "posterior_df contains only zero values after alignment and numeric "
+            "conversion."
+        )
+    usable_columns = post.fillna(0.0).ne(0).any(axis=0)
+    post = post.loc[:, usable_columns].fillna(0.0)
+    if np.isclose(post.sum(axis=1).to_numpy(dtype=float), 0.0).all():
+        raise ValueError(
+            "posterior_df contains only zero values after alignment and numeric "
+            "conversion."
+        )
     X = post.to_numpy(dtype=float)
     n_spots = X.shape[0]
 
@@ -271,12 +322,36 @@ def detect_spatial_niches_from_posteriors(
     # -------------------------
     if add_to_obs:
         table.obs.drop(columns=niches.columns, inplace=True, errors="ignore")
-        table.obs = pd.merge(table.obs, niches, left_index=True, right_index=True)
+        table.obs = pd.merge(
+            table.obs,
+            niches,
+            left_index=True,
+            right_index=True,
+            how="left",
+            sort=False,
+        )
 
     if return_diagnostics:
         return niches, smoothed_posteriors, diagnostics
     else:
         return niches, smoothed_posteriors
+
+
+def detect_niches_from_easydecon_result(
+    sdata,
+    result,
+    bin_size: int = 8,
+    use_assignment_if_no_posterior: bool = False,
+    **kwargs,
+):
+    """Detect niches from an EasyDeconResult-like object."""
+    return detect_spatial_niches_from_posteriors(
+        sdata=sdata,
+        posterior_df=result,
+        bin_size=bin_size,
+        use_assignment_if_no_posterior=use_assignment_if_no_posterior,
+        **kwargs,
+    )
 
 
 def summarize_niche_compositions(
@@ -304,7 +379,6 @@ def summarize_niche_compositions(
     pandas.DataFrame
         (n_niches x cell types) mean compositions per niche.
     """
-    import pandas as pd
     import numpy as np
 
     if not isinstance(niches_df, pd.DataFrame):
@@ -317,9 +391,10 @@ def summarize_niche_compositions(
         raise ValueError("No overlapping indices between smoothed_posteriors and niches_df.")
 
     X = smoothed_posteriors.loc[common_index]
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0.0)
     niches = niches_df.loc[common_index, niches_column]
 
-    mean_mat = X.groupby(niches).mean()
+    mean_mat = X.groupby(niches, observed=False).mean()
 
     if normalize_rows:
         row_sums = mean_mat.sum(axis=1).replace(0, np.nan)
@@ -383,5 +458,3 @@ def plot_niche_compositions(
     ax.legend(fontsize=legend_fontsize, bbox_to_anchor=(1.05, 1), loc="upper left")
     fig.tight_layout()
     return fig, ax
-
-
