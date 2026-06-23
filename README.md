@@ -62,6 +62,57 @@ print(result.assigned_labels.head())
 print(result.posterior_df.head())
 ```
 
+## How easydecon works
+
+1. Marker preparation reads, standardizes, or generates marker tables.
+2. Phase 1 measures marker expression and creates normalized priors for which cell types are plausible at each spatial location.
+3. Phase 2 computes marker-profile similarity and transforms it into likelihoods.
+4. Priors and likelihoods are combined into `posterior_df` when available.
+5. Final assignment turns `assignment_df` into hard labels in `assigned_labels`.
+
+Zero priors generally gate posterior probabilities when `prior_weight > 0`.
+With list-style `marker_genes`, Phase 1 is used as a mask and
+`posterior_df` is `None`.
+
+## Understanding the result
+
+```python
+result.markers_df       # selected spatial-compatible markers
+result.phase1_result    # raw/thresholded Phase 1 marker-expression evidence
+result.priors_df        # row-normalized Phase 1 priors
+result.phase2_result    # raw marker-profile similarity evidence
+result.likelihoods_df   # normalized Phase 2 evidence
+result.posterior_df     # preferred probabilistic output, or None
+result.assignment_df    # exact matrix used for final assignment
+result.assigned_labels  # hard labels added for plotting/annotation
+result.diagnostics      # QC and reproducibility metadata
+```
+
+Use `posterior_df` for downstream probabilistic analyses, `assigned_labels` for
+hard maps, `priors_df` for presence gating, and `phase2_result` for raw
+similarity inspection. See [docs/results.md](docs/results.md) for details.
+
+## Simple visualization
+
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+table = ed.get_table(sdata)
+coords = np.asarray(table.obsm["spatial"])
+cell_type = result.posterior_df.columns[0]
+values = result.posterior_df[cell_type].reindex(table.obs.index).fillna(0)
+
+fig, ax = plt.subplots(figsize=(6, 6))
+points = ax.scatter(coords[:, 0], coords[:, 1], c=values, s=8)
+fig.colorbar(points, ax=ax, label=f"{cell_type} posterior")
+ax.set_title(f"{cell_type} spatial posterior")
+ax.set_aspect("equal")
+fig.tight_layout()
+```
+
+More recipes are in [docs/visualization.md](docs/visualization.md).
+
 ## Generate Scanpy markers
 
 Scanpy marker generation expects normalized and log-transformed expression in
@@ -189,6 +240,7 @@ suppress progress output in automated runs.
 python examples/synthetic_quickstart.py
 python examples/synthetic_scanpy_markers.py
 python examples/synthetic_niches.py
+python examples/visualize_results.py
 python benchmarks/benchmark_synthetic_workflow.py --repeat 3
 ```
 

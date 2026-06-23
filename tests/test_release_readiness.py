@@ -51,6 +51,11 @@ def test_readme_mentions_core_workflows():
         'marker_method="scanpy"',
         'marker_method="pydeseq2"',
         "prepare_markers",
+        "How easydecon works",
+        "Understanding the result",
+        "Simple visualization",
+        "docs/results.md",
+        "docs/visualization.md",
         "detect_niches_from_easydecon_result",
         "summarize_easydecon_result",
     ):
