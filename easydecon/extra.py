@@ -15,6 +15,7 @@ from .easydecon import (
     get_clusters_by_similarity_on_tissue,
     read_markers_dataframe,
 )
+from .markers import PreparedMarkers
 
 
 @dataclass
@@ -28,11 +29,13 @@ class EasyDeconResult:
     posterior_df: pd.DataFrame | None
     assignment_df: pd.DataFrame
     diagnostics: dict
+    prepared_markers: PreparedMarkers | None = None
 
 
 def easydecon_workflow(
     sdata,
     markers_df=None,
+    prepared_markers=None,
     marker_genes=None,                    # This can be a list of genes, You can only give markers_df
     filename=None,
     adata=None,
@@ -128,6 +131,7 @@ def easydecon_workflow(
         filename=filename,
         adata=adata,
         markers_df=markers_df,
+        prepared_markers=prepared_markers,
         exclude_celltype=None,
         bin_size=bin_size,
         top_n_genes=top_n_genes,
@@ -387,6 +391,7 @@ def easydecon_workflow(
             posterior_df=posterior_df,
             assignment_df=assignment_df,
             diagnostics=diagnostics,
+            prepared_markers=prepared_markers,
         )
     result_tuple = (
         phase1_result,

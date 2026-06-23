@@ -1033,6 +1033,7 @@ def read_markers_dataframe(sdata,
                            drop_ribosomal=False,
                            drop_mitochondrial=False,
                            markers_df=None,
+                           prepared_markers=None,
                            table_key=None,
                            preferred_table_keys=None,
                            source=None,
@@ -1111,6 +1112,9 @@ def read_markers_dataframe(sdata,
     markers_df : pandas.DataFrame, optional
         Marker DataFrame to process directly. Takes priority over ``filename``
         and ``adata``.
+    prepared_markers : easydecon.markers.PreparedMarkers, optional
+        Reusable marker preparation. Takes priority over ``markers_df``,
+        ``filename``, and ``adata``.
     table_key : str, optional
         Explicit key of the spatial table in ``sdata.tables``.
     preferred_table_keys : sequence of str, optional
@@ -1176,6 +1180,9 @@ def read_markers_dataframe(sdata,
 
     generated_rank_genes_groups = False
     generated_pseudobulk_deseq = False
+    used_existing_rank_genes_groups = False
+    prepared_markers_used = False
+    marker_signature = None
     deseq_diagnostics = None
     table = get_table(
         sdata,
@@ -1184,7 +1191,28 @@ def read_markers_dataframe(sdata,
         preferred_table_keys=preferred_table_keys,
     )
 
-    if markers_df is not None:
+    if prepared_markers is not None:
+        from .markers import PreparedMarkers, select_prepared_markers
+
+        if not isinstance(prepared_markers, PreparedMarkers):
+            raise TypeError("prepared_markers must be a PreparedMarkers object.")
+        resolved_source = source if source is not None else prepared_markers.source
+        df = select_prepared_markers(
+            prepared_markers,
+            gene_universe=table.var_names,
+            exclude_celltype=exclude_celltype,
+            top_n_genes=top_n_genes,
+            sort_by_column=sort_by_column,
+            ascending=ascending,
+            log2fc_min=log2fc_min,
+            pval_cutoff=pval_cutoff,
+            drop_ribosomal=drop_ribosomal,
+            drop_mitochondrial=drop_mitochondrial,
+            source=resolved_source,
+        )
+        prepared_markers_used = True
+        marker_signature = prepared_markers.signature
+    elif markers_df is not None:
         raw_df = markers_df
         resolved_source = source if source is not None else "dataframe"
     elif filename is not None:
@@ -1221,6 +1249,7 @@ def read_markers_dataframe(sdata,
             if _adata_has_rank_genes_groups(adata, key):
                 marker_adata = adata
                 source_detail = f"adata.uns[{key!r}]"
+                used_existing_rank_genes_groups = True
             elif marker_method == "existing":
                 raise ValueError(
                     f"Could not read markers from adata.uns[{key!r}]. Run "
@@ -1258,41 +1287,47 @@ def read_markers_dataframe(sdata,
             resolved_source = source if source is not None else source_detail
     else:
         raise ValueError(
-            "Please provide markers_df, filename, or an adata object with an "
-            "existing rank_genes_groups result."
+            "Please provide prepared_markers, markers_df, filename, or an "
+            "adata object with an existing rank_genes_groups result."
         )
 
-    schema = MarkerSchema(
-        group_col=celltype,
-        gene_col=gene_id_column,
-        lfc_col="logfoldchanges",
-        padj_col="pvals_adj",
-        score_col="scores",
+    if not prepared_markers_used:
+        schema = MarkerSchema(
+            group_col=celltype,
+            gene_col=gene_id_column,
+            lfc_col="logfoldchanges",
+            padj_col="pvals_adj",
+            score_col="scores",
+        )
+
+        # ``scores`` is the historical default, but not every valid marker format
+        # provides a score. In that case use the standard metric preference.
+        effective_sort_column = sort_by_column
+        resolved_columns = resolve_marker_columns(raw_df, schema=schema)
+        if sort_by_column == "scores" and "scores" not in resolved_columns:
+            effective_sort_column = None
+
+        df = standardize_marker_dataframe(
+            raw_df,
+            schema=schema,
+            gene_universe=table.var_names,
+            exclude_celltype=exclude_celltype,
+            top_n_genes=top_n_genes,
+            sort_by_column=effective_sort_column,
+            ascending=ascending,
+            log2fc_min=log2fc_min,
+            pval_cutoff=pval_cutoff,
+            drop_ribosomal=drop_ribosomal,
+            drop_mitochondrial=drop_mitochondrial,
+            source=resolved_source,
+        )
+
+    used_adata = (
+        not prepared_markers_used
+        and markers_df is None
+        and filename is None
+        and adata is not None
     )
-
-    # ``scores`` is the historical default, but not every valid marker format
-    # provides a score. In that case use the standard metric preference.
-    effective_sort_column = sort_by_column
-    resolved_columns = resolve_marker_columns(raw_df, schema=schema)
-    if sort_by_column == "scores" and "scores" not in resolved_columns:
-        effective_sort_column = None
-
-    df = standardize_marker_dataframe(
-        raw_df,
-        schema=schema,
-        gene_universe=table.var_names,
-        exclude_celltype=exclude_celltype,
-        top_n_genes=top_n_genes,
-        sort_by_column=effective_sort_column,
-        ascending=ascending,
-        log2fc_min=log2fc_min,
-        pval_cutoff=pval_cutoff,
-        drop_ribosomal=drop_ribosomal,
-        drop_mitochondrial=drop_mitochondrial,
-        source=resolved_source,
-    )
-
-    used_adata = markers_df is None and filename is None and adata is not None
     generated_rank_genes_groups = generated_rank_genes_groups if used_adata else False
     generated_pseudobulk_deseq = (
         generated_pseudobulk_deseq if used_adata else False
@@ -1329,6 +1364,11 @@ def read_markers_dataframe(sdata,
             "scanpy_method": scanpy_method if used_adata else None,
             "generated_pseudobulk_deseq": generated_pseudobulk_deseq,
             "pseudobulk_deseq": deseq_diagnostics,
+            "prepared_markers_used": prepared_markers_used,
+            "marker_signature": marker_signature,
+            "marker_generation_reused": (
+                True if prepared_markers_used else used_existing_rank_genes_groups
+            ),
         }
         return df, diagnostics
 

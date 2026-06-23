@@ -79,6 +79,36 @@ result = ed.run_easydecon(
 )
 ```
 
+### Reuse generated markers across spatial datasets
+
+Use `prepare_markers` when differential expression is expensive and you want to
+reuse the same marker preparation for more than one spatial gene universe.
+
+```python
+prepared = ed.prepare_markers(
+    sc_adata,
+    marker_method="scanpy",
+    groupby="cell_type",
+)
+
+result_a = ed.run_easydecon(
+    spatial_a,
+    prepared_markers=prepared,
+    return_result_object=True,
+)
+
+result_b = ed.run_easydecon(
+    spatial_b,
+    prepared_markers=prepared,
+    return_result_object=True,
+)
+```
+
+Differential expression runs once. Marker filtering is repeated cheaply for
+each spatial gene universe. `PreparedMarkers` does not mutate the single-cell
+AnnData; recreate it after changing expression values, annotations, sample
+labels, or DE parameters.
+
 ## Generate pseudobulk PyDESeq2 markers
 
 PyDESeq2 requires raw, non-negative integer counts plus biological sample or
@@ -133,6 +163,8 @@ assignments. With a list-style `marker_genes` mask workflow,
 
 - `ed.run_easydecon`
 - `ed.read_markers_dataframe`
+- `ed.prepare_markers`
+- `ed.select_prepared_markers`
 - `ed.summarize_easydecon_result`
 - `ed.summarize_marker_table`
 - `ed.detect_niches_from_easydecon_result`

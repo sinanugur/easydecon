@@ -17,6 +17,7 @@ from .easydecon import (
     read_markers_dataframe,
 )
 from .extra import EasyDeconResult, easydecon_workflow
+from .markers import PreparedMarkers, prepare_markers, select_prepared_markers
 from .niche import (
     detect_niches_from_easydecon_result,
     detect_spatial_niches_from_posteriors,
@@ -33,6 +34,9 @@ __all__ = [
     "get_clusters_by_similarity_on_tissue",
     "assign_clusters_from_df",
     "compute_pseudobulk_deseq_markers",
+    "PreparedMarkers",
+    "prepare_markers",
+    "select_prepared_markers",
     "set_n_jobs",
     "set_batch_size",
     "easydecon_workflow",

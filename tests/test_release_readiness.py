@@ -50,6 +50,7 @@ def test_readme_mentions_core_workflows():
         "run_easydecon",
         'marker_method="scanpy"',
         'marker_method="pydeseq2"',
+        "prepare_markers",
         "detect_niches_from_easydecon_result",
         "summarize_easydecon_result",
     ):

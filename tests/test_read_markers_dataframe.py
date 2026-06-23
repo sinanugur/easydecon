@@ -158,6 +158,9 @@ def test_read_markers_dataframe_returns_diagnostics():
         "scanpy_method",
         "generated_pseudobulk_deseq",
         "pseudobulk_deseq",
+        "prepared_markers_used",
+        "marker_signature",
+        "marker_generation_reused",
     }
     assert diagnostics["source"] == "dataframe"
     assert diagnostics["n_markers"] == 3
