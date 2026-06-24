@@ -1385,6 +1385,8 @@ def assign_clusters_from_df(
     allow_multiple=False,
     diagnostic=None,
     fold_change_threshold=2.0,
+    minimum_evidence=0.0,
+    tie_tolerance=1e-12,
     add_to_obs=True,
     verbose=True,
 ):
@@ -1446,6 +1448,8 @@ def assign_clusters_from_df(
     """
 
     validate_choice(method, ASSIGN_METHODS, "method")
+    _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
+    _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
     table = get_table(sdata, bin_size=bin_size)
     df_filtered = df.reindex(table.obs.index).fillna(0)
     if df_filtered.shape[1] == 0:
@@ -1469,66 +1473,106 @@ def assign_clusters_from_df(
 
 
     if method == "max" and not allow_multiple:
-        df_reindexed = df_filtered[~(df_filtered == 0).all(axis=1)].idxmax(axis=1).to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+        assignments = df_filtered.apply(
+            _select_unique_winner,
+            axis=1,
+            minimum_evidence=minimum_evidence,
+            tie_tolerance=tie_tolerance,
+        )
+        df_reindexed = assignments.to_frame(results_column).astype(
+            "category"
+        ).reindex(table.obs.index, fill_value=np.nan)
 
     elif method == "zmax" and not allow_multiple:
-        tmp = df_filtered.replace(0, np.nan).apply(lambda x: zscore(x, nan_policy='omit'), axis=0).idxmax(axis=1)
-        df_reindexed = tmp.to_frame(results_column).astype('category').reindex(table.obs.index, fill_value=np.nan)
+        zscores = df_filtered.replace(0, np.nan).apply(
+            lambda x: zscore(x, nan_policy="omit"),
+            axis=0,
+        )
+        zscores = zscores.replace([np.inf, -np.inf], np.nan)
+        assignments = zscores.apply(
+            _select_unique_winner,
+            axis=1,
+            minimum_evidence=minimum_evidence,
+            tie_tolerance=tie_tolerance,
+        )
+        df_reindexed = assignments.to_frame(results_column).astype(
+            "category"
+        ).reindex(table.obs.index, fill_value=np.nan)
 
     elif method == "hybrid":
         # row-wise zscore
         if allow_multiple and verbose:
             print("Multiple assignments per spot allowed, so hybrid assignment method is selected...")
-        row_is_all_zero_or_nan = ~np.isfinite(df_filtered).any(axis=1) | (df_filtered.replace(0, np.nan).isna().all(axis=1))
-        informative_mask = ~row_is_all_zero_or_nan
-        similarity_zscores = df_filtered[informative_mask].apply(
-            lambda r: zscore(r.to_numpy(dtype=float), nan_policy='omit'),
-            axis=1
+        original_numeric = df_filtered.apply(pd.to_numeric, errors="coerce")
+        original_numeric = original_numeric.replace([np.inf, -np.inf], np.nan)
+        original_max = original_numeric.max(axis=1, skipna=True)
+        row_is_all_zero_or_nan = (
+            ~np.isfinite(original_numeric).any(axis=1)
+            | (original_max <= minimum_evidence)
+            | original_max.isna()
         )
-        similarity_zscores = pd.DataFrame(
-            np.vstack(similarity_zscores.values),
-            index=df_filtered[informative_mask].index,
-            columns=df_filtered[informative_mask].columns
-        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    
-        adaptive_probs = similarity_zscores.apply(softmax, axis=1)
+        informative_mask = ~row_is_all_zero_or_nan
+        if not informative_mask.any():
+            df_reindexed = pd.DataFrame(
+                {results_column: pd.Series(np.nan, index=table.obs.index)}
+            ).astype("category")
+        else:
+            similarity_zscores = df_filtered[informative_mask].apply(
+                lambda r: zscore(r.to_numpy(dtype=float), nan_policy='omit'),
+                axis=1
+            )
+            similarity_zscores = pd.DataFrame(
+                np.vstack(similarity_zscores.values),
+                index=df_filtered[informative_mask].index,
+                columns=df_filtered[informative_mask].columns
+            ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        
+            adaptive_probs = similarity_zscores.apply(softmax, axis=1)
 
-        def adaptive_assign(row):
-            sorted_probs = row.sort_values(ascending=False)
-            min_probability = 1.0 / len(row)
+            def adaptive_assign(row):
+                if not allow_multiple:
+                    original_winner = _select_unique_winner(
+                        original_numeric.loc[row.name],
+                        minimum_evidence=minimum_evidence,
+                        tie_tolerance=tie_tolerance,
+                    )
+                    if pd.isna(original_winner):
+                        return np.nan
+                sorted_probs = row.sort_values(ascending=False)
+                min_probability = 1.0 / len(row)
 
-            if len(sorted_probs) < 2:
-                if sorted_probs.iloc[0] >= min_probability:
+                if len(sorted_probs) < 2:
+                    if sorted_probs.iloc[0] >= min_probability:
+                        return sorted_probs.index[0]
+                    else:
+                        return np.nan
+
+                top_prob = sorted_probs.iloc[0]
+                second_prob = sorted_probs.iloc[1]
+
+                if (top_prob >= min_probability) and (top_prob >= fold_change_threshold * second_prob):
                     return sorted_probs.index[0]
+                elif allow_multiple:
+                    eligible = sorted_probs[sorted_probs >= min_probability]
+                    if not eligible.empty:
+                        return ';'.join(eligible.index.tolist())
+                    else:
+                        return np.nan
                 else:
                     return np.nan
 
-            top_prob = sorted_probs.iloc[0]
-            second_prob = sorted_probs.iloc[1]
+            assigned_clusters = []
+            for _, row in tqdm(
+                adaptive_probs.iterrows(),
+                total=adaptive_probs.shape[0],
+                desc="Assigning clusters",
+                leave=True,
+                position=0,
+                disable=not verbose,
+            ):
+                assigned_clusters.append(adaptive_assign(row))
 
-            if (top_prob >= min_probability) and (top_prob >= fold_change_threshold * second_prob):
-                return sorted_probs.index[0]
-            elif allow_multiple:
-                eligible = sorted_probs[sorted_probs >= min_probability]
-                if not eligible.empty:
-                    return ';'.join(eligible.index.tolist())
-                else:
-                    return np.nan
-            else:
-                return np.nan
-
-        assigned_clusters = []
-        for _, row in tqdm(
-            adaptive_probs.iterrows(),
-            total=adaptive_probs.shape[0],
-            desc="Assigning clusters",
-            leave=True,
-            position=0,
-            disable=not verbose,
-        ):
-            assigned_clusters.append(adaptive_assign(row))
-
-        df_reindexed = pd.DataFrame(assigned_clusters, index=adaptive_probs.index, columns=[results_column]).astype('category').reindex(table.obs.index, fill_value=np.nan)
+            df_reindexed = pd.DataFrame(assigned_clusters, index=adaptive_probs.index, columns=[results_column]).astype('category').reindex(table.obs.index, fill_value=np.nan)
 
     else:
         raise ValueError("allow_multiple=True requires method='hybrid'.")
@@ -1613,6 +1657,45 @@ def process_row(row,func, **kwargs):
         #'assigned_cluster': func(row, markers_df, gene_id_column=gene_id_column, similarity_by_column=similarity_by_column,threshold=threshold)
         'assigned_cluster': func(row, **kwargs)
     })
+
+
+def _validate_finite_nonnegative(value, name):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float, np.integer, np.floating))
+        or not np.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{name} must be a finite number greater than or equal to 0.")
+    return value
+
+
+def _select_unique_winner(
+    row,
+    minimum_evidence=0.0,
+    tie_tolerance=1e-12,
+):
+    """Return the unique top label, or NaN for weak/tied/uninformative rows."""
+    minimum_evidence = _validate_finite_nonnegative(
+        minimum_evidence, "minimum_evidence"
+    )
+    tie_tolerance = _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
+    scores = pd.to_numeric(row, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    finite_scores = scores.dropna()
+    if finite_scores.empty:
+        return np.nan
+
+    sorted_scores = finite_scores.sort_values(ascending=False, kind="mergesort")
+    top_score = float(sorted_scores.iloc[0])
+    if len(sorted_scores) == 1:
+        return sorted_scores.index[0] if top_score > minimum_evidence else np.nan
+
+    second_score = float(sorted_scores.iloc[1])
+    if top_score <= minimum_evidence:
+        return np.nan
+    if top_score - second_score <= tie_tolerance:
+        return np.nan
+    return sorted_scores.index[0]
 
 
 

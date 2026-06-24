@@ -10,6 +10,7 @@ from ._validation import (
     validate_positive,
 )
 from .easydecon import (
+    _validate_finite_nonnegative,
     assign_clusters_from_df,
     common_markers_gene_expression_and_filter,
     get_clusters_by_similarity_on_tissue,
@@ -135,8 +136,12 @@ def easydecon_workflow(
     lambda_param: float = 0.25,           # lambda parameter wjaccard
     weight_column: str = "logfoldchanges",  # column in markers_df for weights etc.
     min_markers: int = 3,
-    fallback_auc: float = 0.5,
+    fallback_auc: float = 0.0,
     expression_threshold: float = 0.1,
+    top_n_markers: int | None = None,
+    recovery_power: float = 1.0,
+    drop_shared_markers: bool = False,
+    center_auc: bool = True,
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
     softmax_tau: float = 1.0,                 # softmax temperature
@@ -153,6 +158,8 @@ def easydecon_workflow(
     allow_multiple: bool = False,
     diagnostic=None,
     fold_change_threshold: float = 2.0,
+    minimum_evidence: float = 0.0,
+    tie_tolerance: float = 1e-12,
 
 ):
     validate_choice(
@@ -162,6 +169,24 @@ def easydecon_workflow(
     )
     validate_positive(softmax_tau, "softmax_tau")
     validate_positive(epsilon, "epsilon")
+    _validate_finite_nonnegative(fallback_auc, "fallback_auc")
+    _validate_finite_nonnegative(expression_threshold, "expression_threshold")
+    _validate_finite_nonnegative(recovery_power, "recovery_power")
+    _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
+    _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
+    if (
+        top_n_markers is not None
+        and (
+            isinstance(top_n_markers, bool)
+            or not isinstance(top_n_markers, int)
+            or top_n_markers < 1
+        )
+    ):
+        raise ValueError("top_n_markers must be None or an integer greater than or equal to 1.")
+    if not isinstance(drop_shared_markers, bool):
+        raise ValueError("drop_shared_markers must be a bool.")
+    if not isinstance(center_auc, bool):
+        raise ValueError("center_auc must be a bool.")
     if prior_weight < 0 or likelihood_weight < 0:
         raise ValueError("prior_weight and likelihood_weight must be non-negative.")
 
@@ -306,6 +331,10 @@ def easydecon_workflow(
         min_markers=min_markers,
         fallback_auc=fallback_auc,
         expression_threshold=expression_threshold,
+        top_n_markers=top_n_markers,
+        recovery_power=recovery_power,
+        drop_shared_markers=drop_shared_markers,
+        center_auc=center_auc,
         verbose=verbose,
     )
     if not isinstance(phase2_result, pd.DataFrame):
@@ -377,6 +406,8 @@ def easydecon_workflow(
         allow_multiple=allow_multiple,
         diagnostic=diagnostic,
         fold_change_threshold=fold_change_threshold,
+        minimum_evidence=minimum_evidence,
+        tie_tolerance=tie_tolerance,
         verbose=verbose,
     )
 
@@ -393,6 +424,23 @@ def easydecon_workflow(
         ),
         "results_column": results_column,
         "mask_col": mask_col,
+        "phase2": {
+            "method": method,
+            "min_markers": min_markers,
+            "fallback_auc": fallback_auc,
+            "expression_threshold": expression_threshold,
+            "top_n_markers": top_n_markers,
+            "recovery_power": recovery_power,
+            "drop_shared_markers": drop_shared_markers,
+            "center_auc": center_auc,
+        },
+        "assignment": {
+            "method": assign_method,
+            "minimum_evidence": minimum_evidence,
+            "tie_tolerance": tie_tolerance,
+            "allow_multiple": allow_multiple,
+            "fold_change_threshold": fold_change_threshold,
+        },
     }
 
     if verbose:

@@ -270,6 +270,12 @@ assignments. With a list-style `marker_genes` mask workflow,
 - Phase 2 similarity: `wjaccard`, `auc`, `cosine`, `correlation`, `jaccard`, `overlap`, `sum`, `mean`, `median`, or `euclidean`.
 - Assignment: `max`, `zmax`, or `hybrid`.
 
+Centered AUC uses zero as the default fallback for signatures with insufficient
+evidence. Exact or near-tied assignment rows remain unassigned rather than
+selecting the first cell-type column. Tune assignment and rank scoring with
+`minimum_evidence`, `tie_tolerance`, `top_n_markers`, `recovery_power`,
+`drop_shared_markers`, and `center_auc`.
+
 Use `filtering_algorithm="quantile"` for quick tests. Permutation and NB
 filtering can be more computationally demanding. Use `verbose=False` to
 suppress progress output in automated runs.

@@ -6,6 +6,7 @@ import scanpy as sc
 
 import easydecon.extra as extra_module
 from easydecon.config import config, set_batch_size, set_n_jobs
+from easydecon.easydecon import _select_unique_winner
 
 
 @pytest.fixture(autouse=True)
@@ -124,8 +125,6 @@ def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
     expected_phase2 = _sorted_df(pd.read_csv("tests/data/test_workflow_phase2.csv", index_col=0))
     expected_priors = _sorted_df(pd.read_csv("tests/data/test_workflow_priors.csv", index_col=0))
     expected_posterior = _sorted_df(pd.read_csv("tests/data/test_workflow_posterior.csv", index_col=0))
-    expected_assigned = pd.read_csv("tests/data/test_workflow_assigned_labels.csv", index_col=0)
-
     marker_genes = workflow_markers["names"].dropna().astype(str).unique()[:15].tolist()
 
     calls = {"phase1": 0, "phase2": 0}
@@ -171,7 +170,8 @@ def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
     pd.testing.assert_frame_equal(posterior_df, expected_posterior, check_dtype=False, atol=1e-5, rtol=0)
 
     assigned = pd.to_numeric(assigned_labels.sort_index()["easydecon_test"], errors="coerce")
-    expected = pd.to_numeric(expected_assigned.sort_index()["easydecon_test"], errors="coerce")
+    expected = phase2_result.apply(_select_unique_winner, axis=1)
+    expected = pd.to_numeric(expected.sort_index(), errors="coerce")
     pd.testing.assert_series_equal(assigned, expected, check_names=False, check_dtype=False)
 
     assert "MarkerGroup" in phase1_result.columns

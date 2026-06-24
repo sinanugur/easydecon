@@ -10,6 +10,7 @@ import pandas as pd
 from ._schema import get_table
 from ._validation import validate_choice
 from .easydecon import (
+    _validate_finite_nonnegative,
     assign_clusters_from_df,
     get_clusters_by_similarity_on_tissue,
     read_markers_dataframe,
@@ -126,6 +127,10 @@ def _phase2_kwargs(workflow_kwargs):
         "min_markers",
         "fallback_auc",
         "expression_threshold",
+        "top_n_markers",
+        "recovery_power",
+        "drop_shared_markers",
+        "center_auc",
     )
     return {key: workflow_kwargs[key] for key in keys if key in workflow_kwargs}
 
@@ -150,6 +155,8 @@ def refine_group(
     assign_method="max",
     allow_multiple=False,
     fold_change_threshold=2.0,
+    minimum_evidence=0.0,
+    tie_tolerance=1e-12,
     verbose=True,
     **workflow_kwargs,
 ) -> RefinedGroupResult:
@@ -159,6 +166,8 @@ def refine_group(
     validate_choice(evidence_to_likelihood, {"row_normalize", "softmax"}, "evidence_to_likelihood")
     if parent_threshold < 0:
         raise ValueError("parent_threshold must be non-negative.")
+    _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
+    _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
     _pop_blocked_workflow_kwargs(workflow_kwargs)
 
     table = get_table(
@@ -198,6 +207,8 @@ def refine_group(
             assign_method=assign_method,
             allow_multiple=allow_multiple,
             fold_change_threshold=fold_change_threshold,
+            minimum_evidence=minimum_evidence,
+            tie_tolerance=tie_tolerance,
             verbose=verbose,
             **workflow_kwargs,
         )
@@ -253,6 +264,8 @@ def refine_group(
         method=assign_method,
         allow_multiple=allow_multiple,
         fold_change_threshold=fold_change_threshold,
+        minimum_evidence=minimum_evidence,
+        tie_tolerance=tie_tolerance,
         add_to_obs=True,
         verbose=verbose,
     )
@@ -270,6 +283,9 @@ def refine_group(
         "child_phase1_ran": mode == "full",
         "child_phase2_ran": True,
         "marker_diagnostics": marker_diagnostics,
+        "phase2_method": workflow_kwargs.get("method", "wjaccard"),
+        "minimum_evidence": minimum_evidence,
+        "tie_tolerance": tie_tolerance,
     }
 
     return RefinedGroupResult(
