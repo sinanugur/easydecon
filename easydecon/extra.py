@@ -394,6 +394,7 @@ def easydecon_workflow(
     # -----------------------
     # Phase 2: Evidence
     # -----------------------
+    phase2_performance = {}
     phase2_result = get_clusters_by_similarity_on_tissue(
         sdata=sdata,
         markers_df=phase2_markers_df,
@@ -418,6 +419,7 @@ def easydecon_workflow(
         ucell_negative_weight=ucell_negative_weight,
         ucell_marker_role_column=ucell_marker_role_column,
         verbose=verbose,
+        _diagnostics_out=phase2_performance,
     )
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
@@ -522,6 +524,7 @@ def easydecon_workflow(
             "ucell_max_rank": ucell_max_rank,
             "ucell_negative_weight": ucell_negative_weight,
             "ucell_marker_role_column": ucell_marker_role_column,
+            "performance": phase2_performance,
         },
         "assignment": {
             "method": assign_method,

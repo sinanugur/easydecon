@@ -40,6 +40,20 @@ not automatically absolute cell fractions. Hard labels discard uncertainty, and
 mixed spatial locations can have meaningful support for multiple cell types.
 Inspect posterior maxima and diagnostics before interpreting assignments.
 
+## Phase 2 expression handling
+
+UCell-like and AUC Phase 2 scoring rank only the resolved marker-union genes.
+Other marker-only similarity methods also extract only the marker union when
+that is mathematically equivalent.
+
+Some set-based methods intentionally use the full expression row: Jaccard,
+overlap, and weighted Jaccard consider non-marker expressed genes in their
+denominators, so easydecon preserves the full-gene row for those methods.
+
+Sparse spatial matrices are processed row-wise during Phase 2 without
+densifying the complete spatial matrix. Individual selected rows are converted
+as needed for scoring.
+
 ```python
 summary = ed.summarize_easydecon_result(
     result,

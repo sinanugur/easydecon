@@ -326,6 +326,13 @@ refined = ed.refine_group(
 
 See [docs/marker_roles.md](docs/marker_roles.md).
 
+## Phase 2 performance
+
+Phase 2 precomputes marker structures and avoids converting the complete
+spatial matrix to a dense DataFrame. Methods whose formulas depend only on
+marker genes use the marker union, while Jaccard, overlap, and weighted
+Jaccard retain the full gene row to preserve their original definitions.
+
 ## Niche detection
 
 ```python

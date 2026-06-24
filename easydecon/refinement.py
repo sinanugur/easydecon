@@ -292,6 +292,7 @@ def refine_group(
             ),
             require_phase1=False,
         )
+        phase2_performance = {}
         phase2_child = get_clusters_by_similarity_on_tissue(
             child_table,
             phase2_markers,
@@ -302,6 +303,7 @@ def refine_group(
             method=workflow_kwargs.get("method", "wjaccard"),
             add_to_obs=False,
             verbose=verbose,
+            _diagnostics_out=phase2_performance,
             **_phase2_kwargs(workflow_kwargs),
         )
         conditional_child = _evidence_to_likelihood(
@@ -357,6 +359,11 @@ def refine_group(
             else child_result.diagnostics.get("marker_roles", {}).get(
                 "phase2_marker_counts_by_group"
             )
+        ),
+        "phase2_performance": (
+            phase2_performance
+            if mode == "phase2"
+            else child_result.diagnostics.get("phase2", {}).get("performance")
         ),
         "phase2_method": workflow_kwargs.get("method", "wjaccard"),
         "minimum_evidence": minimum_evidence,

@@ -1,4 +1,5 @@
 import warnings
+from dataclasses import dataclass
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import scanpy as sc
 import numpy as np
@@ -525,6 +526,7 @@ def get_clusters_by_similarity_on_tissue(
     method="wjaccard",
     add_to_obs=False,
     verbose=True,
+    _diagnostics_out=None,
     **kwargs,
 ):
     """
@@ -582,7 +584,7 @@ def get_clusters_by_similarity_on_tissue(
     markers_df = standardize_marker_dataframe(
         markers_df,
         schema=MarkerSchema(group_col=celltype, gene_col=gene_id_column),
-        gene_universe=table.var_names,
+        gene_universe=None,
         top_n_genes=None,
         sort_by_column=None,
         log2fc_min=-np.inf,
@@ -592,6 +594,23 @@ def get_clusters_by_similarity_on_tissue(
     celltype = "group"
     gene_id_column = "names"
     marker_groups = markers_df["group"].drop_duplicates().tolist()
+    cache_kwargs = dict(kwargs)
+    cache_similarity_by_column = cache_kwargs.pop(
+        "similarity_by_column", "logfoldchanges"
+    )
+    cache_weight_column = cache_kwargs.pop("weight_column", "logfoldchanges")
+    phase2_cache = _build_phase2_cache(
+        markers_df,
+        spatial_gene_names=table.var_names,
+        method=method,
+        gene_id_column=gene_id_column,
+        similarity_by_column=cache_similarity_by_column,
+        weight_column=cache_weight_column,
+        **cache_kwargs,
+    )
+    phase2_cache.diagnostics["sparse_input"] = bool(issparse(table.X))
+    if _diagnostics_out is not None:
+        _diagnostics_out.update(phase2_cache.diagnostics)
 
     
     # Enable tqdm progress bar in pandas
@@ -624,20 +643,8 @@ def get_clusters_by_similarity_on_tissue(
         "ucell": function_row_ucell,
     }
     func = similarity_methods[method]
-    ucell_signatures = None
-    if method == "ucell":
-        ucell_signatures = _build_ucell_signatures(
-            markers_df,
-            gene_universe=table.var_names,
-            gene_id_column=gene_id_column,
-            celltype=celltype,
-            marker_role_column=kwargs.get("ucell_marker_role_column", "marker_role"),
-            weight_column=kwargs.get("weight_column", "logfoldchanges"),
-            top_n_markers=kwargs.get("top_n_markers", None),
-            drop_shared_markers=kwargs.get("drop_shared_markers", False),
-        )
     if len(spots_with_expression) == 0:
-        columns = ucell_signatures["groups"] if method == "ucell" else marker_groups
+        columns = phase2_cache.groups
         df = pd.DataFrame(0.0, index=table.obs.index, columns=columns)
         if method != "diagnostic" and add_to_obs:
             if verbose:
@@ -647,9 +654,9 @@ def get_clusters_by_similarity_on_tissue(
                 table.obs, df, left_index=True, right_index=True, how="left"
             )
         return df
-    if method == "ucell" and len(ucell_signatures["marker_union"]) == 0:
+    if method in MARKER_UNION_SAFE_METHODS and len(phase2_cache.marker_union) == 0:
         df = pd.DataFrame(
-            0.0, index=table.obs.index, columns=ucell_signatures["groups"]
+            0.0, index=table.obs.index, columns=phase2_cache.groups
         )
         if add_to_obs:
             if verbose:
@@ -667,17 +674,13 @@ def get_clusters_by_similarity_on_tissue(
         print("Batch size:", config.batch_size)
 
     # Run computations in parallel
-    if method == "ucell":
-        row_iterator = table[spots_with_expression, ucell_signatures["marker_union"]].to_df().iterrows()
-        total_rows = len(spots_with_expression)
-        row_kwargs = dict(
-            kwargs,
-            ucell_signatures=ucell_signatures,
-        )
-    else:
-        row_iterator = table[spots_with_expression,].to_df().iterrows()
-        total_rows = len(spots_with_expression)
-        row_kwargs = dict(kwargs)
+    row_iterator = _iter_phase2_rows(
+        table,
+        spots_with_expression,
+        phase2_cache.expression_genes,
+    )
+    total_rows = len(spots_with_expression)
+    row_kwargs = dict(kwargs, phase2_cache=phase2_cache)
 
     results = Parallel(
         n_jobs=config.n_jobs,
@@ -687,7 +690,7 @@ def get_clusters_by_similarity_on_tissue(
         delayed(process_row_with_suppression)(
             row,
             func,
-            markers_df=markers_df,
+            markers_df=None,
             gene_id_column=gene_id_column,
             **row_kwargs,
         )
@@ -705,8 +708,7 @@ def get_clusters_by_similarity_on_tissue(
     result_df = pd.DataFrame(results)
     result_df.set_index("Index", inplace=True)
     result_df = result_df["assigned_cluster"].apply(pd.Series)
-    if method == "ucell":
-        result_df = result_df.reindex(columns=ucell_signatures["groups"], fill_value=0.0)
+    result_df = result_df.reindex(columns=phase2_cache.groups, fill_value=0.0)
 
     # For spots not processed (e.g., excluded by common_group_name != 0)
     # fill with zeros or NaNs, depending on your needs
@@ -1773,6 +1775,295 @@ def process_row(row,func, **kwargs):
     })
 
 
+MARKER_UNION_SAFE_METHODS = frozenset(
+    {
+        "correlation",
+        "cosine",
+        "euclidean",
+        "sum",
+        "mean",
+        "median",
+        "diagnostic",
+        "auc",
+        "ucell",
+    }
+)
+
+FULL_GENE_ROW_METHODS = frozenset({"jaccard", "overlap", "wjaccard"})
+
+
+@dataclass(frozen=True)
+class _Phase2Cache:
+    method: str
+    groups: tuple
+    expression_genes: tuple
+    marker_union: tuple
+    group_genes: dict
+    group_gene_positions: dict
+    group_reference_values: dict
+    group_marker_sets: dict
+    group_weights: dict
+    auc_signatures: object | None
+    ucell_signatures: object | None
+    uses_full_gene_row: bool
+    diagnostics: dict
+
+
+def _assert_phase2_method_categories():
+    categorized = MARKER_UNION_SAFE_METHODS | FULL_GENE_ROW_METHODS
+    missing = set(SIMILARITY_METHODS) - categorized
+    overlap = MARKER_UNION_SAFE_METHODS & FULL_GENE_ROW_METHODS
+    if missing or overlap:
+        raise AssertionError(
+            "Every similarity method must belong to exactly one Phase 2 "
+            f"extraction category. Missing={sorted(missing)}, overlap={sorted(overlap)}."
+        )
+
+
+def _unique_in_order(values):
+    seen = set()
+    ordered = []
+    for value in values:
+        value = str(value)
+        if value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
+
+
+def _build_auc_signatures(
+    markers_df,
+    spatial_gene_names,
+    gene_id_column="names",
+    weight_column="logfoldchanges",
+    top_n_markers=None,
+    drop_shared_markers=False,
+):
+    top_n_markers = _validate_optional_positive_integer(
+        top_n_markers, "top_n_markers"
+    )
+    marker_lists = {}
+    spatial_set = {str(gene) for gene in spatial_gene_names}
+    for group in markers_df["group"].drop_duplicates().astype(str).tolist():
+        group_df = markers_df.loc[markers_df["group"].astype(str) == group].copy()
+        group_df = group_df.loc[group_df[gene_id_column].astype(str).isin(spatial_set)]
+        if weight_column in group_df.columns:
+            group_df = group_df.sort_values(weight_column, ascending=False, kind="stable")
+        genes = group_df[gene_id_column].astype(str).dropna().tolist()
+        if top_n_markers is not None:
+            genes = genes[:top_n_markers]
+        marker_lists[group] = genes
+
+    if drop_shared_markers:
+        all_markers = pd.Series(
+            [gene for genes in marker_lists.values() for gene in genes], dtype="object"
+        )
+        gene_counts = all_markers.value_counts() if not all_markers.empty else {}
+        marker_lists = {
+            group: [gene for gene in genes if gene_counts.get(gene, 0) == 1]
+            for group, genes in marker_lists.items()
+        }
+
+    spatial_index = pd.Index([str(gene) for gene in spatial_gene_names])
+    marker_union = pd.Index(
+        sorted(set(gene for genes in marker_lists.values() for gene in genes))
+    ).intersection(spatial_index)
+    return {
+        "groups": tuple(marker_lists),
+        "marker_lists": marker_lists,
+        "marker_union": marker_union,
+    }
+
+
+def _build_wjaccard_weights(
+    markers_df,
+    gene_id_column="names",
+    weight_column="logfoldchanges",
+    lambda_param=0.25,
+    spatial_gene_names=None,
+):
+    use_precalculated_weights = weight_column is not None and weight_column in markers_df.columns
+    spatial_set = None if spatial_gene_names is None else {str(gene) for gene in spatial_gene_names}
+    group_weights = {}
+    for group in markers_df["group"].drop_duplicates().astype(str).tolist():
+        cluster_df = markers_df.loc[markers_df["group"].astype(str) == group]
+        if spatial_set is not None:
+            cluster_df = cluster_df.loc[cluster_df[gene_id_column].astype(str).isin(spatial_set)]
+        cluster_genes = cluster_df[gene_id_column].reset_index(drop=True).astype(str)
+        if use_precalculated_weights:
+            cluster_weight_values = pd.to_numeric(
+                cluster_df[weight_column].reset_index(drop=True), errors="coerce"
+            )
+            max_weight = cluster_weight_values.max()
+            if max_weight > 0:
+                weights = cluster_weight_values / max_weight
+            else:
+                weights = cluster_weight_values
+            cluster_weights = pd.Series(weights.values, index=cluster_genes)
+        else:
+            n_genes = len(cluster_genes)
+            weights = (
+                np.exp(-lambda_param * np.arange(n_genes))
+                if n_genes > 0
+                else np.array([])
+            )
+            cluster_weights = pd.Series(weights, index=cluster_genes)
+        if cluster_weights.index.has_duplicates:
+            cluster_weights = cluster_weights.groupby(level=0).max()
+        group_weights[group] = cluster_weights
+    return group_weights
+
+
+def _build_phase2_cache(
+    markers_df,
+    spatial_gene_names,
+    method,
+    gene_id_column="names",
+    similarity_by_column="logfoldchanges",
+    weight_column="logfoldchanges",
+    **kwargs,
+) -> _Phase2Cache:
+    _assert_phase2_method_categories()
+    validate_choice(method, SIMILARITY_METHODS, "method")
+    spatial_genes = tuple(str(gene) for gene in spatial_gene_names)
+    spatial_gene_set = set(spatial_genes)
+    spatial_positions = {gene: idx for idx, gene in enumerate(spatial_genes)}
+    groups = tuple(markers_df["group"].drop_duplicates().astype(str).tolist())
+
+    raw_group_genes = {}
+    for group in groups:
+        group_df = markers_df.loc[markers_df["group"].astype(str) == group]
+        raw_group_genes[group] = _unique_in_order(
+            group_df[gene_id_column].dropna().astype(str).tolist()
+        )
+
+    marker_union = tuple(
+        gene
+        for gene in spatial_genes
+        if any(gene in set(genes) for genes in raw_group_genes.values())
+    )
+    uses_full_gene_row = method in FULL_GENE_ROW_METHODS
+
+    ucell_signatures = None
+    auc_signatures = None
+    if method == "ucell":
+        ucell_signatures = _build_ucell_signatures(
+            markers_df,
+            gene_universe=spatial_gene_names,
+            gene_id_column=gene_id_column,
+            celltype="group",
+            marker_role_column=kwargs.get("ucell_marker_role_column", "marker_role"),
+            weight_column=weight_column,
+            top_n_markers=kwargs.get("top_n_markers", None),
+            drop_shared_markers=kwargs.get("drop_shared_markers", False),
+        )
+        marker_union = tuple(str(gene) for gene in ucell_signatures["marker_union"])
+    elif method == "auc":
+        auc_signatures = _build_auc_signatures(
+            markers_df,
+            spatial_gene_names=spatial_gene_names,
+            gene_id_column=gene_id_column,
+            weight_column=weight_column,
+            top_n_markers=kwargs.get("top_n_markers", None),
+            drop_shared_markers=kwargs.get("drop_shared_markers", False),
+        )
+        marker_union = tuple(str(gene) for gene in auc_signatures["marker_union"])
+
+    expression_genes = spatial_genes if uses_full_gene_row else marker_union
+    expression_positions = {gene: idx for idx, gene in enumerate(expression_genes)}
+
+    group_genes = {}
+    group_gene_positions = {}
+    group_reference_values = {}
+    group_marker_sets = {}
+    for group in groups:
+        genes = tuple(gene for gene in raw_group_genes[group] if gene in spatial_gene_set)
+        group_genes[group] = genes
+        group_gene_positions[group] = tuple(
+            expression_positions[gene] for gene in genes if gene in expression_positions
+        )
+        group_marker_sets[group] = set(genes)
+        if method in {"correlation", "cosine", "euclidean"} and similarity_by_column in markers_df.columns:
+            group_df = markers_df.loc[markers_df["group"].astype(str) == group]
+            series = pd.Series(
+                pd.to_numeric(group_df[similarity_by_column], errors="coerce").values,
+                index=group_df[gene_id_column].astype(str).values,
+            )
+            group_reference_values[group] = series.reindex(expression_genes)
+        else:
+            group_reference_values[group] = None
+
+    group_weights = (
+        _build_wjaccard_weights(
+            markers_df,
+            gene_id_column=gene_id_column,
+            weight_column=weight_column,
+            lambda_param=kwargs.get("lambda_param", 0.25),
+            spatial_gene_names=spatial_gene_names,
+        )
+        if method == "wjaccard"
+        else {}
+    )
+    diagnostics = {
+        "method": method,
+        "extraction_strategy": "full_gene_universe" if uses_full_gene_row else "marker_union",
+        "n_total_spatial_genes": int(len(spatial_genes)),
+        "n_expression_genes": int(len(expression_genes)),
+        "n_marker_union_genes": int(len(marker_union)),
+        "n_groups": int(len(groups)),
+        "marker_cache_used": True,
+    }
+    return _Phase2Cache(
+        method=method,
+        groups=groups,
+        expression_genes=expression_genes,
+        marker_union=marker_union,
+        group_genes=group_genes,
+        group_gene_positions=group_gene_positions,
+        group_reference_values=group_reference_values,
+        group_marker_sets=group_marker_sets,
+        group_weights=group_weights,
+        auc_signatures=auc_signatures,
+        ucell_signatures=ucell_signatures,
+        uses_full_gene_row=uses_full_gene_row,
+        diagnostics=diagnostics,
+    )
+
+
+def _matrix_to_csr_or_dense(matrix):
+    if issparse(matrix):
+        return matrix.tocsr(copy=False), True
+    return np.asarray(matrix), False
+
+
+def _iter_phase2_rows(table, obs_names, gene_names):
+    obs_names = pd.Index(obs_names)
+    gene_names = pd.Index(gene_names)
+    if len(obs_names) == 0:
+        return
+    if len(gene_names) == 0:
+        for obs_name in obs_names:
+            yield obs_name, pd.Series(dtype=float, index=gene_names, name=obs_name)
+        return
+
+    try:
+        subset = table[obs_names, gene_names]
+        matrix, is_sparse = _matrix_to_csr_or_dense(subset.X)
+    except Exception as exc:
+        raise TypeError(
+            "Could not extract Phase 2 expression rows from the AnnData-like table."
+        ) from exc
+
+    if is_sparse:
+        for row_idx, obs_name in enumerate(obs_names):
+            values = matrix.getrow(row_idx).toarray().ravel()
+            yield obs_name, pd.Series(values, index=gene_names, name=obs_name)
+    else:
+        for row_idx, obs_name in enumerate(obs_names):
+            values = np.asarray(matrix[row_idx, :]).reshape(-1)
+            yield obs_name, pd.Series(values, index=gene_names, name=obs_name)
+
+
 def _validate_finite_nonnegative(value, name):
     if (
         isinstance(value, bool)
@@ -1931,6 +2222,8 @@ def _build_ucell_signatures(
     gene_id_column = "names"
     celltype = "group"
     groups = work[celltype].drop_duplicates().astype(str).tolist()
+    gene_universe_set = {str(gene) for gene in gene_universe}
+    work = work.loc[work[gene_id_column].astype(str).isin(gene_universe_set)].copy()
 
     roles, role_column = normalize_marker_roles(
         work,
@@ -2018,7 +2311,12 @@ def _rank_u_signature_score(
 
 def function_row_ucell(row, markers_df=None, **kwargs):
     """UCell-like normalized rank-U signature score for one spatial location."""
-    signatures = kwargs.get("ucell_signatures")
+    phase2_cache = kwargs.get("phase2_cache")
+    signatures = (
+        phase2_cache.ucell_signatures
+        if phase2_cache is not None and phase2_cache.ucell_signatures is not None
+        else kwargs.get("ucell_signatures")
+    )
     if signatures is None:
         signatures = _build_ucell_signatures(
             markers_df,
@@ -2104,6 +2402,34 @@ def function_row_ucell(row, markers_df=None, **kwargs):
 
 
 def function_row_spearman(row, markers_df,**kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        a = {}
+        for c in phase2_cache.groups:
+            vector_series = phase2_cache.group_reference_values.get(c)
+            if vector_series is None:
+                a[c] = 0.0
+                continue
+            valid_mask = ~vector_series.isna() & ~row.isna()
+            if int(valid_mask.sum()) < 2:
+                a[c] = 0.0
+                continue
+            if (
+                row[valid_mask].nunique(dropna=True) < 2
+                or vector_series[valid_mask].nunique(dropna=True) < 2
+            ):
+                a[c] = 0.0
+                continue
+            t = (row[valid_mask] != 0).sum()
+            if t == 0:
+                a[c] = 0.0
+            else:
+                l = len(phase2_cache.group_genes.get(c, ()))
+                sp = spearmanr(
+                    row[valid_mask], vector_series[valid_mask], nan_policy="omit"
+                )[0] * ((t / l) if l else 0.0)
+                a[c] = sp if np.isfinite(sp) and sp > 0 else 0.0
+        return a
     gene_id_column=kwargs.get("gene_id_column","names")
     similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
     #penalty_param=kwargs.get("penalty_param",0.5)
@@ -2137,6 +2463,29 @@ def function_row_spearman(row, markers_df,**kwargs):
 
 
 def function_row_cosine(row, markers_df,**kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        a = {}
+        for c in phase2_cache.groups:
+            vector_series = phase2_cache.group_reference_values.get(c)
+            if vector_series is None:
+                a[c] = 0.0
+                continue
+            valid_mask = ~vector_series.isna() & ~row.isna()
+            if int(valid_mask.sum()) < 2:
+                a[c] = 0.0
+                continue
+            vector_values = min_max_scale(vector_series[valid_mask])
+            if np.linalg.norm(vector_values.to_numpy(dtype=float)) == 0:
+                a[c] = 0.0
+                continue
+            t = (row[valid_mask] != 0).sum()
+            if t == 0:
+                a[c] = 0.0
+            else:
+                score = 1 - cosine(row[valid_mask], vector_values)
+                a[c] = float(score) if np.isfinite(score) else 0.0
+        return a
     gene_id_column=kwargs.get("gene_id_column","names")
     similarity_by_column=kwargs.get("similarity_by_column","logfoldchanges")
     #penalty_param=kwargs.get("penalty_param",0)
@@ -2169,6 +2518,27 @@ def function_row_cosine(row, markers_df,**kwargs):
 
 
 def function_row_euclidean(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        a = {}
+        for c in phase2_cache.groups:
+            vector_series = phase2_cache.group_reference_values.get(c)
+            if vector_series is None:
+                a[c] = 0.0
+                continue
+            valid_mask = ~vector_series.isna() & ~row.isna()
+            if int(valid_mask.sum()) < 1:
+                a[c] = 0.0
+                continue
+            vector_values = min_max_scale(vector_series[valid_mask])
+            t = (row[valid_mask] != 0).sum()
+            if t == 0:
+                a[c] = 0.0
+            else:
+                distance_val = euclidean(row[valid_mask], vector_values)
+                similarity_val = 1 / (1 + distance_val)
+                a[c] = float(similarity_val) if np.isfinite(similarity_val) else 0.0
+        return a
     gene_id_column = kwargs.get("gene_id_column", "names")
     similarity_by_column = kwargs.get("similarity_by_column", "logfoldchanges")
     #penalty_param = kwargs.get("penalty_param", 0)
@@ -2399,6 +2769,48 @@ def function_row_auc_specific_v2(row, markers_df, **kwargs):
     import numpy as np
     import pandas as pd
 
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None and phase2_cache.auc_signatures is not None:
+        signatures = phase2_cache.auc_signatures
+        min_markers = kwargs.get("min_markers", 3)
+        fallback_score = kwargs.get("fallback_auc", 0.0)
+        expr_threshold = kwargs.get("expression_threshold", 0.0)
+        recovery_power = kwargs.get("recovery_power", 1.0)
+        center_auc = kwargs.get("center_auc", True)
+        marker_union = signatures["marker_union"]
+        marker_lists = signatures["marker_lists"]
+        if len(marker_union) < 2:
+            return {c: fallback_score for c in signatures["groups"]}
+        x = row.reindex(marker_union).fillna(0.0).astype(float)
+        if expr_threshold is not None and expr_threshold > 0:
+            x = x.where(x > expr_threshold, 0.0)
+        ranks = x.rank(method="average", ascending=True)
+        scores = {}
+        for c in signatures["groups"]:
+            pos = pd.Index(marker_lists[c]).intersection(marker_union)
+            n_pos = len(pos)
+            n_neg = len(marker_union) - n_pos
+            if n_pos < min_markers or n_neg <= 0:
+                scores[c] = fallback_score
+                continue
+            detected = row.reindex(pos).fillna(0.0) > expr_threshold
+            n_detected = int(detected.sum())
+            if n_detected < min_markers:
+                scores[c] = fallback_score
+                continue
+            sum_ranks = ranks.loc[pos].sum()
+            U = sum_ranks - n_pos * (n_pos + 1) / 2.0
+            auc = U / (n_pos * n_neg)
+            if not np.isfinite(auc):
+                scores[c] = fallback_score
+                continue
+            auc = float(np.clip(auc, 0.0, 1.0))
+            score = max(0.0, 2.0 * (auc - 0.5)) if center_auc else auc
+            recovery = n_detected / float(n_pos)
+            score *= recovery ** recovery_power
+            scores[c] = float(np.clip(score, 0.0, 1.0))
+        return scores
+
     gene_id_column = kwargs.get("gene_id_column", "names")
     weight_column = kwargs.get("weight_column", "logfoldchanges")
     min_markers = kwargs.get("min_markers", 3)
@@ -2497,6 +2909,18 @@ def function_row_auc_specific_v2(row, markers_df, **kwargs):
     return scores
 
 def function_row_jaccard(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        row_set = set(row[row > 0].sort_values(ascending=False).index)
+        return {
+            c: (
+                0.0
+                if len(row_set.union(phase2_cache.group_marker_sets[c])) == 0
+                else len(row_set.intersection(phase2_cache.group_marker_sets[c]))
+                / len(row_set.union(phase2_cache.group_marker_sets[c]))
+            )
+            for c in phase2_cache.groups
+        }
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
     #threshold=kwargs.get("threshold")
@@ -2520,6 +2944,19 @@ def function_row_jaccard(row, markers_df, **kwargs):
 
 #Szymkiewicz–Simpson 
 def function_row_overlap(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        row_set = set(row[row > 0].sort_values(ascending=False).index)
+        scores = {}
+        for c in phase2_cache.groups:
+            vector_set = phase2_cache.group_marker_sets[c]
+            denominator = min(len(row_set), len(vector_set))
+            scores[c] = (
+                0.0
+                if denominator == 0
+                else len(row_set.intersection(vector_set)) / denominator
+            )
+        return scores
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
     #threshold=kwargs.get("threshold")
@@ -2541,6 +2978,13 @@ def function_row_overlap(row, markers_df, **kwargs):
     return a
 
 def function_row_diagnostic(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        row_set = set(row[row > 0].sort_values(ascending=False).index)
+        return {
+            c: row_set.intersection(phase2_cache.group_marker_sets[c])
+            for c in phase2_cache.groups
+        }
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
     
@@ -2553,6 +2997,14 @@ def function_row_diagnostic(row, markers_df, **kwargs):
     return a
 
 def function_row_sum(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        return {
+            c: float(row.iloc[list(phase2_cache.group_gene_positions[c])].fillna(0.0).sum())
+            if len(phase2_cache.group_gene_positions[c]) > 0
+            else 0.0
+            for c in phase2_cache.groups
+        }
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
     
@@ -2568,6 +3020,17 @@ def function_row_sum(row, markers_df, **kwargs):
     return a
 
 def function_row_mean(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        scores = {}
+        for c in phase2_cache.groups:
+            positions = phase2_cache.group_gene_positions[c]
+            if len(positions) == 0:
+                scores[c] = 0.0
+                continue
+            values = row.iloc[list(positions)]
+            scores[c] = 0.0 if values.notna().sum() == 0 else float(values.fillna(0.0).mean())
+        return scores
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
     
@@ -2586,6 +3049,17 @@ def function_row_mean(row, markers_df, **kwargs):
     return a
 
 def function_row_median(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        scores = {}
+        for c in phase2_cache.groups:
+            positions = phase2_cache.group_gene_positions[c]
+            if len(positions) == 0:
+                scores[c] = 0.0
+                continue
+            values = row.iloc[list(positions)]
+            scores[c] = 0.0 if values.notna().sum() == 0 else float(values.fillna(0.0).median())
+        return scores
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
     for c in markers_df.index.unique():
@@ -2604,6 +3078,31 @@ def function_row_median(row, markers_df, **kwargs):
 
 
 def function_row_weighted_jaccard(row, markers_df, **kwargs):
+    phase2_cache = kwargs.get("phase2_cache")
+    if phase2_cache is not None:
+        a = {}
+        target_genes = row[row > 0]
+        max_expr = target_genes.max()
+        if max_expr > 0:
+            target_weights = target_genes / max_expr
+        else:
+            target_weights = target_genes
+        if target_weights.index.has_duplicates:
+            target_weights = target_weights.groupby(level=0).max()
+
+        for c in phase2_cache.groups:
+            cluster_weights = phase2_cache.group_weights[c]
+            all_genes = set(cluster_weights.index).union(target_weights.index)
+            numerator = 0.0
+            denominator = 0.0
+            for gene in all_genes:
+                a_i = cluster_weights.get(gene, 0.0)
+                b_i = target_weights.get(gene, 0.0)
+                numerator += min(a_i, b_i)
+                denominator += max(a_i, b_i)
+            a[c] = 0.0 if denominator == 0.0 else numerator / denominator
+        return a
+
     gene_id_column = kwargs.get("gene_id_column","names")
     weight_column = kwargs.get("weight_column", None)  # Name of the weight column in markers_df
     lambda_param = kwargs.get("lambda_param", 0.25)  # Default lambda for exponential decay
