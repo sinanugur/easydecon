@@ -3,6 +3,7 @@
 - Getting started: see the root [README](../README.md).
 - Understanding results: [results.md](results.md).
 - Visualization recipes: [visualization.md](visualization.md).
+- Refining broad groups into subclusters: [refinement.md](refinement.md).
 
 ## Workflow overview
 

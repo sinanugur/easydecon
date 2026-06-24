@@ -92,6 +92,46 @@ Use `posterior_df` for downstream probabilistic analyses, `assigned_labels` for
 hard maps, `priors_df` for presence gating, and `phase2_result` for raw
 similarity inspection. See [docs/results.md](docs/results.md) for details.
 
+## Refining a broad cell type into subclusters
+
+Use `refine_group` to split one coarse parent group into subtype labels without
+rerunning the full parent analysis.
+
+```python
+refined = ed.refine_group(
+    sdata,
+    parent_result=result,
+    parent_group="Myeloid",
+    markers_df=myeloid_subcluster_markers,
+    mode="phase2",
+    parent_source="priors",
+    parent_threshold=0.0,
+)
+```
+
+`mode="phase2"` uses the previous Myeloid score as the parent gate and runs
+only subtype similarity. `mode="full"` uses the same parent gate, then
+calculates new subtype-specific Phase 1 priors and Phase 2 likelihoods.
+
+```python
+refined = ed.refine_group(
+    sdata,
+    parent_result=result,
+    parent_group="Myeloid",
+    markers_df=myeloid_subcluster_markers,
+    mode="full",
+    parent_source="priors",
+    parent_threshold=0.0,
+)
+
+refined.conditional_df  # subtype probabilities within Myeloid
+refined.absolute_df     # subtype values scaled by the parent Myeloid score
+refined.assigned_labels # hard subtype labels
+```
+
+Locations outside the Myeloid gate remain zero and unassigned. See
+[docs/refinement.md](docs/refinement.md).
+
 ## Simple visualization
 
 ```python

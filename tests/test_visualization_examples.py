@@ -79,6 +79,7 @@ def test_plot_celltype_posterior_requires_existing_celltype(visualization_output
 def test_visualization_docs_exist():
     assert (ROOT / "docs" / "results.md").is_file()
     assert (ROOT / "docs" / "visualization.md").is_file()
+    assert (ROOT / "docs" / "refinement.md").is_file()
 
 
 def test_visualization_docs_mention_core_outputs():

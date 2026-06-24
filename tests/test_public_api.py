@@ -8,6 +8,8 @@ def test_package_imports_public_api():
     assert hasattr(ed, "PreparedMarkers")
     assert hasattr(ed, "prepare_markers")
     assert hasattr(ed, "select_prepared_markers")
+    assert hasattr(ed, "RefinedGroupResult")
+    assert hasattr(ed, "refine_group")
     assert hasattr(ed, "detect_niches_from_easydecon_result")
     assert hasattr(ed, "standardize_marker_dataframe")
 
@@ -28,5 +30,7 @@ def test_all_contains_public_names():
         "PreparedMarkers",
         "prepare_markers",
         "select_prepared_markers",
+        "RefinedGroupResult",
+        "refine_group",
     ]:
         assert name in ed.__all__

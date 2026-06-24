@@ -24,6 +24,7 @@ from .niche import (
     plot_niche_compositions,
     summarize_niche_compositions,
 )
+from .refinement import RefinedGroupResult, refine_group
 
 run_easydecon = easydecon_workflow
 
@@ -52,4 +53,6 @@ __all__ = [
     "get_table",
     "summarize_easydecon_result",
     "summarize_marker_table",
+    "RefinedGroupResult",
+    "refine_group",
 ]

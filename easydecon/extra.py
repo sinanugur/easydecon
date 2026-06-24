@@ -18,6 +18,47 @@ from .easydecon import (
 from .markers import PreparedMarkers
 
 
+def _evidence_to_likelihood(
+    evidence_df,
+    method="softmax",
+    softmax_tau=1.0,
+) -> pd.DataFrame:
+    """Transform Phase 2 evidence into likelihoods.
+
+    This preserves the historical easydecon_workflow behavior for both
+    ``row_normalize`` and ``softmax``.
+    """
+    evidence_df = evidence_df.copy()
+    if method == "row_normalize":
+        min_per_row = evidence_df.min(axis=1)
+        needs_shift = min_per_row < 0
+        if needs_shift.any():
+            evidence_df = evidence_df.sub(min_per_row, axis=0)
+        evidence_df = evidence_df.clip(lower=0)
+        evidence_row_sum = evidence_df.sum(axis=1).replace(0, np.nan)
+        return evidence_df.div(evidence_row_sum, axis=0).fillna(0)
+
+    if method == "softmax":
+        x = evidence_df.to_numpy(dtype=float)
+        x = np.where(np.isfinite(x), x, -np.inf)
+        row_max = np.max(x, axis=1, keepdims=True)
+        valid_rows = np.isfinite(row_max[:, 0])
+        logits = np.zeros_like(x, dtype=float)
+        valid_logits = (x[valid_rows] - row_max[valid_rows]) / softmax_tau
+        logits[valid_rows] = np.exp(valid_logits)
+        row_sum = np.sum(logits, axis=1, keepdims=True)
+        row_sum[row_sum == 0] = np.nan
+        likelihoods_np = logits / row_sum
+        likelihoods_np = np.nan_to_num(likelihoods_np, nan=0.0)
+        return pd.DataFrame(
+            likelihoods_np,
+            index=evidence_df.index,
+            columns=evidence_df.columns,
+        )
+
+    raise ValueError("evidence_to_likelihood must be 'row_normalize' or 'softmax'.")
+
+
 @dataclass
 class EasyDeconResult:
     markers_df: pd.DataFrame
@@ -55,8 +96,8 @@ def easydecon_workflow(
     ascending: bool = False,
     log2fc_min: float = 0.25,
     pval_cutoff: float = 0.05,
-    drop_ribosomal: bool = False,
-    drop_mitochondrial: bool = False,
+    drop_ribosomal: bool = True,
+    drop_mitochondrial: bool = True,
     table_key=None,
     preferred_table_keys=None,
     marker_source=None,
@@ -270,29 +311,11 @@ def easydecon_workflow(
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
 
-    evidence_df = phase2_result.copy()
-    if evidence_to_likelihood == "row_normalize":
-        min_per_row = evidence_df.min(axis=1)
-        needs_shift = (min_per_row < 0)
-        if needs_shift.any():
-            evidence_df = evidence_df.sub(min_per_row, axis=0)
-        evidence_df = evidence_df.clip(lower=0)
-        evidence_row_sum = evidence_df.sum(axis=1).replace(0, np.nan)
-        likelihoods_df = evidence_df.div(evidence_row_sum, axis=0).fillna(0)
-
-    elif evidence_to_likelihood == "softmax":
-        x = evidence_df.to_numpy(dtype=float)
-        x = np.where(np.isfinite(x), x, -np.inf)
-        row_max = np.max(x, axis=1, keepdims=True)
-        valid_rows = np.isfinite(row_max[:, 0])
-        logits = np.zeros_like(x, dtype=float)
-        valid_logits = (x[valid_rows] - row_max[valid_rows]) / softmax_tau
-        logits[valid_rows] = np.exp(valid_logits)
-        row_sum = np.sum(logits, axis=1, keepdims=True)
-        row_sum[row_sum == 0] = np.nan
-        likelihoods_np = logits / row_sum
-        likelihoods_np = np.nan_to_num(likelihoods_np, nan=0.0)
-        likelihoods_df = pd.DataFrame(likelihoods_np, index=evidence_df.index, columns=evidence_df.columns)
+    likelihoods_df = _evidence_to_likelihood(
+        phase2_result,
+        method=evidence_to_likelihood,
+        softmax_tau=softmax_tau,
+    )
 
 
     # -----------------------
