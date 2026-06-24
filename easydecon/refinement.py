@@ -16,6 +16,7 @@ from .easydecon import (
     read_markers_dataframe,
 )
 from .extra import EasyDeconResult, _evidence_to_likelihood, easydecon_workflow
+from .markers import resolve_phase_marker_tables
 
 
 REFINEMENT_MODES = frozenset({"full", "phase2"})
@@ -109,6 +110,19 @@ def _read_marker_kwargs(workflow_kwargs):
         "deseq_quiet": "deseq_quiet",
         "deseq_kwargs": "deseq_kwargs",
         "deseq_stats_kwargs": "deseq_stats_kwargs",
+        "reference_min_cells": "reference_min_cells",
+        "reference_min_mean": "reference_min_mean",
+        "reference_min_log2fc": "reference_min_log2fc",
+        "reference_min_detection": "reference_min_detection",
+        "reference_min_detection_delta": "reference_min_detection_delta",
+        "reference_pseudocount": "reference_pseudocount",
+        "reference_contrast": "reference_contrast",
+        "marker_roles": "marker_roles",
+        "reference_presence_min_log2fc": "reference_presence_min_log2fc",
+        "reference_presence_min_detection_delta": "reference_presence_min_detection_delta",
+        "reference_negative_min_log2fc": "reference_negative_min_log2fc",
+        "reference_negative_min_detection": "reference_negative_min_detection",
+        "reference_negative_min_detection_delta": "reference_negative_min_detection_delta",
         "celltype": "celltype",
         "gene_id_column": "gene_id_column",
     }
@@ -131,6 +145,9 @@ def _phase2_kwargs(workflow_kwargs):
         "recovery_power",
         "drop_shared_markers",
         "center_auc",
+        "ucell_max_rank",
+        "ucell_negative_weight",
+        "ucell_marker_role_column",
     )
     return {key: workflow_kwargs[key] for key in keys if key in workflow_kwargs}
 
@@ -150,6 +167,12 @@ def refine_group(
     bin_size=8,
     table_key=None,
     preferred_table_keys=None,
+    marker_roles="shared",
+    reference_presence_min_log2fc: float = 0.5,
+    reference_presence_min_detection_delta: float = 0.0,
+    reference_negative_min_log2fc: float = 1.0,
+    reference_negative_min_detection: float = 0.10,
+    reference_negative_min_detection_delta: float = 0.05,
     evidence_to_likelihood="softmax",
     softmax_tau=1.0,
     assign_method="max",
@@ -169,6 +192,24 @@ def refine_group(
     _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
     _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
     _pop_blocked_workflow_kwargs(workflow_kwargs)
+    workflow_kwargs.setdefault("marker_roles", marker_roles)
+    workflow_kwargs.setdefault(
+        "reference_presence_min_log2fc", reference_presence_min_log2fc
+    )
+    workflow_kwargs.setdefault(
+        "reference_presence_min_detection_delta",
+        reference_presence_min_detection_delta,
+    )
+    workflow_kwargs.setdefault(
+        "reference_negative_min_log2fc", reference_negative_min_log2fc
+    )
+    workflow_kwargs.setdefault(
+        "reference_negative_min_detection", reference_negative_min_detection
+    )
+    workflow_kwargs.setdefault(
+        "reference_negative_min_detection_delta",
+        reference_negative_min_detection_delta,
+    )
 
     table = get_table(
         sdata,
@@ -223,6 +264,9 @@ def refine_group(
 
     else:
         child_result = None
+        read_kwargs = _read_marker_kwargs(workflow_kwargs)
+        if read_kwargs.get("marker_roles") == "phase_specific":
+            read_kwargs["top_n_genes"] = None
         child_markers, marker_diagnostics = read_markers_dataframe(
             child_table,
             markers_df=markers_df,
@@ -232,11 +276,25 @@ def refine_group(
             bin_size=bin_size,
             return_diagnostics=True,
             verbose=verbose,
-            **_read_marker_kwargs(workflow_kwargs),
+            **read_kwargs,
+        )
+        _, phase2_markers, marker_role_diagnostics = resolve_phase_marker_tables(
+            child_markers,
+            marker_roles=workflow_kwargs.get("marker_roles", "shared"),
+            method=workflow_kwargs.get("method", "wjaccard"),
+            marker_role_column=workflow_kwargs.get(
+                "ucell_marker_role_column", "marker_role"
+            ),
+            top_n_genes=(
+                workflow_kwargs.get("top_n_genes")
+                if workflow_kwargs.get("marker_roles", "shared") == "phase_specific"
+                else None
+            ),
+            require_phase1=False,
         )
         phase2_child = get_clusters_by_similarity_on_tissue(
             child_table,
-            child_markers,
+            phase2_markers,
             common_group_name=None,
             bin_size=bin_size,
             gene_id_column="names",
@@ -283,6 +341,23 @@ def refine_group(
         "child_phase1_ran": mode == "full",
         "child_phase2_ran": True,
         "marker_diagnostics": marker_diagnostics,
+        "marker_roles": (
+            marker_role_diagnostics
+            if mode == "phase2"
+            else child_result.diagnostics.get("marker_roles")
+        ),
+        "phase2_roles": (
+            marker_role_diagnostics.get("phase2_roles")
+            if mode == "phase2"
+            else child_result.diagnostics.get("marker_roles", {}).get("phase2_roles")
+        ),
+        "phase2_marker_counts_by_group": (
+            marker_role_diagnostics.get("phase2_marker_counts_by_group")
+            if mode == "phase2"
+            else child_result.diagnostics.get("marker_roles", {}).get(
+                "phase2_marker_counts_by_group"
+            )
+        ),
         "phase2_method": workflow_kwargs.get("method", "wjaccard"),
         "minimum_evidence": minimum_evidence,
         "tie_tolerance": tie_tolerance,

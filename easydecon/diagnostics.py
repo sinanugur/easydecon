@@ -76,25 +76,37 @@ def summarize_marker_table(
                 group_df[source_col].dropna().astype(str).drop_duplicates().tolist()
             )
             sources = ", ".join(unique_sources) if unique_sources else None
-        rows.append(
-            {
-                "group": group,
-                "n_markers": int(group_df.shape[0]),
-                "n_unique_genes": int(genes.nunique()),
-                "top_genes": ", ".join(genes.iloc[: max(0, top_genes)].tolist()),
-                "marker_sources": sources,
-            }
+        row = {
+            "group": group,
+            "n_markers": int(group_df.shape[0]),
+            "n_unique_genes": int(genes.nunique()),
+            "top_genes": ", ".join(genes.iloc[: max(0, top_genes)].tolist()),
+            "marker_sources": sources,
+        }
+        if "marker_role" in group_df.columns:
+            role_counts = group_df["marker_role"].dropna().astype(str).value_counts()
+            row.update(
+                {
+                    "marker_roles": ", ".join(role_counts.index.tolist()),
+                    "n_presence": int(role_counts.get("presence", 0)),
+                    "n_identity": int(role_counts.get("identity", 0)),
+                    "n_positive": int(role_counts.get("positive", 0)),
+                    "n_negative": int(role_counts.get("negative", 0)),
+                }
+            )
+        rows.append(row)
+    columns = [
+        "group",
+        "n_markers",
+        "n_unique_genes",
+        "top_genes",
+        "marker_sources",
+    ]
+    if any("marker_roles" in row for row in rows):
+        columns.extend(
+            ["marker_roles", "n_presence", "n_identity", "n_positive", "n_negative"]
         )
-    return pd.DataFrame(
-        rows,
-        columns=[
-            "group",
-            "n_markers",
-            "n_unique_genes",
-            "top_genes",
-            "marker_sources",
-        ],
-    )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _matrix_summary(df):
@@ -210,6 +222,8 @@ def summarize_easydecon_result(
         markers_summary["marker_method"] = marker_diagnostics["marker_method"]
     if marker_diagnostics.get("source") is not None:
         markers_summary["marker_source"] = marker_diagnostics["source"]
+    if marker_diagnostics.get("reference_contrast") is not None:
+        markers_summary["reference_contrast"] = marker_diagnostics["reference_contrast"]
 
     posterior_df = getattr(result, "posterior_df", None)
     workflow_summary = {
@@ -235,6 +249,36 @@ def summarize_easydecon_result(
             diagnostics, "n_phase2_celltypes", result.phase2_result.shape[1]
         ),
     }
+    phase2_diagnostics = diagnostics.get("phase2", {})
+    if isinstance(phase2_diagnostics, dict) and phase2_diagnostics.get("method") == "ucell":
+        workflow_summary["phase2"] = {
+            key: phase2_diagnostics.get(key)
+            for key in (
+                "method",
+                "ucell_max_rank",
+                "ucell_negative_weight",
+                "min_markers",
+                "expression_threshold",
+                "recovery_power",
+                "drop_shared_markers",
+                "n_informative_rows",
+                "n_uninformative_rows",
+            )
+        }
+    role_diagnostics = diagnostics.get("marker_roles", {})
+    if isinstance(role_diagnostics, dict) and role_diagnostics:
+        workflow_summary["marker_roles"] = {
+            key: role_diagnostics.get(key)
+            for key in (
+                "mode",
+                "phase1_n_markers",
+                "phase2_n_markers",
+                "combined_marker_counts_by_role",
+                "phase1_roles",
+                "phase2_roles",
+            )
+            if role_diagnostics.get(key) is not None
+        }
 
     matrices = {
         "phase1_result": _matrix_summary(result.phase1_result),

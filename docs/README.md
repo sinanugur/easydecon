@@ -4,6 +4,9 @@
 - Understanding results: [results.md](results.md).
 - Visualization recipes: [visualization.md](visualization.md).
 - Refining broad groups into subclusters: [refinement.md](refinement.md).
+- Reference-profile markers: [reference_markers.md](reference_markers.md).
+- UCell-like Phase 2 scoring: [ucell.md](ucell.md).
+- Marker roles and phase-specific routing: [marker_roles.md](marker_roles.md).
 
 ## Workflow overview
 

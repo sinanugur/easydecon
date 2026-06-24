@@ -4,11 +4,22 @@ from numbers import Real
 
 
 MARKER_METHODS = frozenset(
-    {"auto", "existing", "scanpy", "pydeseq2", "deseq2", "pseudobulk_deseq2"}
+    {
+        "auto",
+        "existing",
+        "scanpy",
+        "pydeseq2",
+        "deseq2",
+        "pseudobulk_deseq2",
+        "reference",
+        "rctd_like",
+    }
 )
 PYDESEQ2_MARKER_METHODS = frozenset(
     {"pydeseq2", "deseq2", "pseudobulk_deseq2"}
 )
+REFERENCE_MARKER_METHODS = frozenset({"reference", "rctd_like"})
+REFERENCE_CONTRASTS = frozenset({"mean_other", "max_other"})
 FILTERING_ALGORITHMS = frozenset({"permutation", "quantile", "nb"})
 PHASE1_OUTPUT_STATS = frozenset({"expression", "minus_log10_p"})
 AGGREGATION_METHODS = frozenset({"sum", "mean", "median", "cs"})
@@ -25,10 +36,13 @@ SIMILARITY_METHODS = frozenset(
         "median",
         "euclidean",
         "auc",
+        "ucell",
     }
 )
 EVIDENCE_TO_LIKELIHOOD_METHODS = frozenset({"row_normalize", "softmax"})
 ASSIGN_METHODS = frozenset({"max", "zmax", "hybrid"})
+UCELL_MARKER_ROLES = frozenset({"positive", "negative", "presence", "identity"})
+MARKER_ROLE_MODES = frozenset({"shared", "phase_specific"})
 
 
 def format_allowed_values(values) -> str:
@@ -94,12 +108,16 @@ def validate_positive(value, name: str, *, allow_zero=False):
 __all__ = [
     "MARKER_METHODS",
     "PYDESEQ2_MARKER_METHODS",
+    "REFERENCE_MARKER_METHODS",
+    "REFERENCE_CONTRASTS",
     "FILTERING_ALGORITHMS",
     "PHASE1_OUTPUT_STATS",
     "AGGREGATION_METHODS",
     "SIMILARITY_METHODS",
     "EVIDENCE_TO_LIKELIHOOD_METHODS",
     "ASSIGN_METHODS",
+    "UCELL_MARKER_ROLES",
+    "MARKER_ROLE_MODES",
     "format_allowed_values",
     "validate_choice",
     "validate_probability_range",

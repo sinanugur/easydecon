@@ -6,17 +6,21 @@ import pandas as pd
 from ._schema import get_table
 from ._validation import (
     EVIDENCE_TO_LIKELIHOOD_METHODS,
+    MARKER_ROLE_MODES,
     validate_choice,
     validate_positive,
+    validate_probability_range,
 )
 from .easydecon import (
     _validate_finite_nonnegative,
+    _validate_nonempty_string,
+    _validate_optional_positive_integer,
     assign_clusters_from_df,
     common_markers_gene_expression_and_filter,
     get_clusters_by_similarity_on_tissue,
     read_markers_dataframe,
 )
-from .markers import PreparedMarkers
+from .markers import PreparedMarkers, resolve_phase_marker_tables
 
 
 def _evidence_to_likelihood(
@@ -115,6 +119,19 @@ def easydecon_workflow(
     deseq_quiet: bool = True,
     deseq_kwargs=None,
     deseq_stats_kwargs=None,
+    reference_min_cells: int = 25,
+    reference_min_mean: float = 2e-4,
+    reference_min_log2fc: float = 1.0,
+    reference_min_detection: float = 0.10,
+    reference_min_detection_delta: float = 0.05,
+    reference_pseudocount: float = 1e-9,
+    reference_contrast: str = "max_other",
+    marker_roles: str = "shared",
+    reference_presence_min_log2fc: float = 0.5,
+    reference_presence_min_detection_delta: float = 0.0,
+    reference_negative_min_log2fc: float = 1.0,
+    reference_negative_min_detection: float = 0.10,
+    reference_negative_min_detection_delta: float = 0.05,
     verbose: bool = True,
     return_result_object: bool = False,
     return_diagnostics: bool = False,
@@ -142,6 +159,9 @@ def easydecon_workflow(
     recovery_power: float = 1.0,
     drop_shared_markers: bool = False,
     center_auc: bool = True,
+    ucell_max_rank: int | None = None,
+    ucell_negative_weight: float = 1.0,
+    ucell_marker_role_column: str = "marker_role",
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
     softmax_tau: float = 1.0,                 # softmax temperature
@@ -174,15 +194,34 @@ def easydecon_workflow(
     _validate_finite_nonnegative(recovery_power, "recovery_power")
     _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
     _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
-    if (
-        top_n_markers is not None
-        and (
-            isinstance(top_n_markers, bool)
-            or not isinstance(top_n_markers, int)
-            or top_n_markers < 1
-        )
+    validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
+    _validate_finite_nonnegative(reference_min_log2fc, "reference_min_log2fc")
+    _validate_finite_nonnegative(
+        reference_presence_min_log2fc, "reference_presence_min_log2fc"
+    )
+    _validate_finite_nonnegative(
+        reference_negative_min_log2fc, "reference_negative_min_log2fc"
+    )
+    for value, name in (
+        (reference_min_detection, "reference_min_detection"),
+        (reference_min_detection_delta, "reference_min_detection_delta"),
+        (
+            reference_presence_min_detection_delta,
+            "reference_presence_min_detection_delta",
+        ),
+        (reference_negative_min_detection, "reference_negative_min_detection"),
+        (
+            reference_negative_min_detection_delta,
+            "reference_negative_min_detection_delta",
+        ),
     ):
-        raise ValueError("top_n_markers must be None or an integer greater than or equal to 1.")
+        validate_probability_range(value, name)
+    _validate_optional_positive_integer(top_n_markers, "top_n_markers")
+    _validate_optional_positive_integer(ucell_max_rank, "ucell_max_rank")
+    _validate_finite_nonnegative(ucell_negative_weight, "ucell_negative_weight")
+    _validate_nonempty_string(ucell_marker_role_column, "ucell_marker_role_column")
+    if isinstance(min_markers, bool) or not isinstance(min_markers, int) or min_markers < 1:
+        raise ValueError("min_markers must be an integer greater than or equal to 1.")
     if not isinstance(drop_shared_markers, bool):
         raise ValueError("drop_shared_markers must be a bool.")
     if not isinstance(center_auc, bool):
@@ -200,7 +239,7 @@ def easydecon_workflow(
         prepared_markers=prepared_markers,
         exclude_celltype=None,
         bin_size=bin_size,
-        top_n_genes=top_n_genes,
+        top_n_genes=None if marker_roles == "phase_specific" else top_n_genes,
         sort_by_column=sort_by_column,
         ascending=ascending,
         gene_id_column=gene_id_column,
@@ -231,6 +270,19 @@ def easydecon_workflow(
         deseq_quiet=deseq_quiet,
         deseq_kwargs=deseq_kwargs,
         deseq_stats_kwargs=deseq_stats_kwargs,
+        reference_min_cells=reference_min_cells,
+        reference_min_mean=reference_min_mean,
+        reference_min_log2fc=reference_min_log2fc,
+        reference_min_detection=reference_min_detection,
+        reference_min_detection_delta=reference_min_detection_delta,
+        reference_pseudocount=reference_pseudocount,
+        reference_contrast=reference_contrast,
+        marker_roles=marker_roles,
+        reference_presence_min_log2fc=reference_presence_min_log2fc,
+        reference_presence_min_detection_delta=reference_presence_min_detection_delta,
+        reference_negative_min_log2fc=reference_negative_min_log2fc,
+        reference_negative_min_detection=reference_negative_min_detection,
+        reference_negative_min_detection_delta=reference_negative_min_detection_delta,
     )
     if not isinstance(markers_df, pd.DataFrame):
         raise ValueError("Resolved markers_df must be a pandas DataFrame.")
@@ -248,7 +300,34 @@ def easydecon_workflow(
     celltype = "group"
     gene_id_column = "names"
     marker_genes_is_list = isinstance(marker_genes, list)
-    phase1_markers = markers_df if marker_genes is None else marker_genes
+    phase1_markers_df, phase2_markers_df, marker_role_diagnostics = (
+        resolve_phase_marker_tables(
+            markers_df,
+            marker_roles=marker_roles,
+            method=method,
+            marker_role_column=ucell_marker_role_column,
+            top_n_genes=top_n_genes if marker_roles == "phase_specific" else None,
+            require_phase1=marker_genes is None,
+        )
+    )
+    combined_markers_df = pd.concat(
+        [phase1_markers_df, phase2_markers_df], ignore_index=False
+    )
+    if "marker_role" in combined_markers_df.columns:
+        combined_markers_df = combined_markers_df.drop_duplicates(
+            subset=["group", "names", "marker_role"], keep="first"
+        )
+        combined_markers_df.set_index("group", drop=False, inplace=True)
+    else:
+        combined_markers_df = combined_markers_df.drop_duplicates(
+            subset=["group", "names"], keep="first"
+        )
+        combined_markers_df.set_index("group", drop=False, inplace=True)
+    markers_df = combined_markers_df
+    phase1_marker_source = (
+        "marker_genes_override" if marker_genes is not None else "resolved_marker_roles"
+    )
+    phase1_markers = phase1_markers_df if marker_genes is None else marker_genes
     if isinstance(phase1_markers, pd.DataFrame):
         phase1_markers = phase1_markers.copy()
         rename_columns = {}
@@ -317,7 +396,7 @@ def easydecon_workflow(
     # -----------------------
     phase2_result = get_clusters_by_similarity_on_tissue(
         sdata=sdata,
-        markers_df=markers_df,
+        markers_df=phase2_markers_df,
         bin_size=bin_size,
         gene_id_column="names",
         celltype="group",
@@ -335,6 +414,9 @@ def easydecon_workflow(
         recovery_power=recovery_power,
         drop_shared_markers=drop_shared_markers,
         center_auc=center_auc,
+        ucell_max_rank=ucell_max_rank,
+        ucell_negative_weight=ucell_negative_weight,
+        ucell_marker_role_column=ucell_marker_role_column,
         verbose=verbose,
     )
     if not isinstance(phase2_result, pd.DataFrame):
@@ -424,6 +506,10 @@ def easydecon_workflow(
         ),
         "results_column": results_column,
         "mask_col": mask_col,
+        "marker_roles": {
+            **marker_role_diagnostics,
+            "phase1_marker_source": phase1_marker_source,
+        },
         "phase2": {
             "method": method,
             "min_markers": min_markers,
@@ -433,6 +519,9 @@ def easydecon_workflow(
             "recovery_power": recovery_power,
             "drop_shared_markers": drop_shared_markers,
             "center_auc": center_auc,
+            "ucell_max_rank": ucell_max_rank,
+            "ucell_negative_weight": ucell_negative_weight,
+            "ucell_marker_role_column": ucell_marker_role_column,
         },
         "assignment": {
             "method": assign_method,
@@ -442,6 +531,10 @@ def easydecon_workflow(
             "fold_change_threshold": fold_change_threshold,
         },
     }
+    if method == "ucell":
+        informative_rows = (phase2_result.max(axis=1) > 0)
+        diagnostics["phase2"]["n_informative_rows"] = int(informative_rows.sum())
+        diagnostics["phase2"]["n_uninformative_rows"] = int((~informative_rows).sum())
 
     if verbose:
         print("Finished easydecon workflow.")
@@ -453,7 +546,7 @@ def easydecon_workflow(
 
     if return_result_object:
         return EasyDeconResult(
-            markers_df=markers_df,
+        markers_df=markers_df,
             phase1_result=phase1_result,
             phase2_result=phase2_result,
             assigned_labels=assigned_labels,

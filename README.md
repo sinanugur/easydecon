@@ -223,6 +223,109 @@ result = ed.run_easydecon(
 
 Do not treat individual cells as independent DESeq2 replicates.
 
+## Generate reference-profile markers
+
+Reference-profile markers are selected from cell-type mean profiles and
+detection fractions after each cell is normalized by its total abundance.
+
+```python
+prepared = ed.prepare_markers(
+    sc_adata,
+    marker_method="reference",
+    groupby="cell_type",
+    layer="counts",
+    reference_contrast="max_other",
+)
+
+result = ed.run_easydecon(
+    sdata,
+    prepared_markers=prepared,
+    filtering_algorithm="quantile",
+    return_result_object=True,
+)
+```
+
+`max_other` favors markers that distinguish a group from its strongest
+competitor. `mean_other` is more permissive and compares against the average
+competing profile. This method does not calculate statistical p-values; its
+threshold defaults are starting points and may need dataset-specific tuning.
+It is inspired by reference-profile marker-selection concepts, but it is not an
+implementation of the RCTD model. See [docs/reference_markers.md](docs/reference_markers.md).
+
+## UCell-like Phase 2 scoring
+
+Use `method="ucell"` when you want Phase 2 evidence to come from within-location
+gene ranks rather than weighted marker overlap.
+
+```python
+result = ed.run_easydecon(
+    sdata,
+    markers_df=markers_df,
+    filtering_algorithm="quantile",
+    method="ucell",
+    min_markers=3,
+    top_n_markers=50,
+    return_result_object=True,
+)
+```
+
+If your marker table has a `marker_role` column, `positive` and `identity`
+markers contribute positive evidence, `negative` markers subtract evidence,
+and `presence` markers are ignored by this Phase 2 method. Missing roles are
+treated as positive. Tune this scorer with `ucell_max_rank`,
+`ucell_negative_weight`, `expression_threshold`, `recovery_power`,
+`drop_shared_markers`, and `top_n_markers`. See [docs/ucell.md](docs/ucell.md).
+
+## Phase-specific markers
+
+By default, `marker_roles="shared"` preserves the historical behavior: the same
+selected marker table is used for Phase 1 and Phase 2.
+
+Use `marker_roles="phase_specific"` with reference-profile markers when you
+want sensitive presence markers for Phase 1 and more specific identity markers
+for Phase 2. With `method="ucell"`, negative markers can additionally subtract
+evidence.
+
+```python
+prepared = ed.prepare_markers(
+    sc_adata,
+    marker_method="reference",
+    marker_roles="phase_specific",
+    groupby="cell_type",
+    layer="counts",
+)
+
+result = ed.run_easydecon(
+    sdata,
+    prepared_markers=prepared,
+    marker_roles="phase_specific",
+    method="ucell",
+    return_result_object=True,
+)
+```
+
+Reference-profile generation can emit `presence`, `identity`, and `negative`
+rows. The same gene may intentionally be both `presence` and `identity` for the
+same group. Scanpy and DESeq-derived markers are not assigned roles
+automatically; provide a manually annotated `marker_role` column if you want to
+use phase-specific routing with those marker sources.
+
+Phase-specific routing also works in hierarchical refinement:
+
+```python
+refined = ed.refine_group(
+    sdata,
+    parent_result=result,
+    parent_group="Myeloid",
+    prepared_markers=myeloid_prepared,
+    marker_roles="phase_specific",
+    mode="full",
+    method="ucell",
+)
+```
+
+See [docs/marker_roles.md](docs/marker_roles.md).
+
 ## Niche detection
 
 ```python
@@ -265,9 +368,9 @@ assignments. With a list-style `marker_genes` mask workflow,
 
 ## Available methods
 
-- Marker generation: `auto`, `existing`, `scanpy`, or `pydeseq2` (`deseq2` and `pseudobulk_deseq2` are aliases).
+- Marker generation: `auto`, `existing`, `scanpy`, `reference`, or `pydeseq2` (`deseq2`, `pseudobulk_deseq2`, and `rctd_like` are aliases).
 - Phase 1 filtering: `quantile`, `permutation`, or `nb`.
-- Phase 2 similarity: `wjaccard`, `auc`, `cosine`, `correlation`, `jaccard`, `overlap`, `sum`, `mean`, `median`, or `euclidean`.
+- Phase 2 similarity: `wjaccard`, `ucell`, `auc`, `cosine`, `correlation`, `jaccard`, `overlap`, `sum`, `mean`, `median`, or `euclidean`.
 - Assignment: `max`, `zmax`, or `hybrid`.
 
 Centered AUC uses zero as the default fallback for signatures with insufficient

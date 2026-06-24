@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from ._validation import UCELL_MARKER_ROLES, format_allowed_values
+
 
 @dataclass(frozen=True)
 class MarkerSchema:
@@ -139,6 +141,48 @@ def _as_exclusion_set(values):
     return set(values)
 
 
+def resolve_marker_role_column(df, marker_role_column="marker_role"):
+    """Return the actual marker-role column name, matching case-insensitively."""
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame.")
+    if marker_role_column in df.columns:
+        return marker_role_column
+    requested = str(marker_role_column).casefold()
+    return next(
+        (column for column in df.columns if str(column).casefold() == requested),
+        None,
+    )
+
+
+def normalize_marker_roles(
+    df,
+    marker_role_column="marker_role",
+    *,
+    fill_missing_column=False,
+):
+    """Resolve, normalize, and validate marker-role values.
+
+    Missing or blank role values become ``"positive"``. Unknown values raise a
+    user-facing ``ValueError`` that lists the supported roles.
+    """
+    actual_column = resolve_marker_role_column(df, marker_role_column)
+    if actual_column is None:
+        if fill_missing_column:
+            return pd.Series("positive", index=df.index, dtype="object"), None
+        return None, None
+
+    roles = df[actual_column]
+    roles = roles.where(~roles.isna(), "positive").astype(str).str.strip().str.casefold()
+    roles = roles.replace("", "positive")
+    unknown = sorted(set(roles) - set(UCELL_MARKER_ROLES))
+    if unknown:
+        raise ValueError(
+            "Unknown marker_role values: "
+            f"{unknown}. Allowed values: {format_allowed_values(UCELL_MARKER_ROLES)}."
+        )
+    return roles, actual_column
+
+
 def standardize_marker_dataframe(
     df,
     schema=None,
@@ -161,6 +205,8 @@ def standardize_marker_dataframe(
         raise TypeError("df must be a pandas DataFrame.")
 
     result = df.copy() if copy else df
+    if result.index.name is not None and result.index.name in result.columns:
+        result = result.reset_index(drop=True)
     resolved = resolve_marker_columns(result, schema=schema)
     available = ", ".join(map(str, result.columns))
 
@@ -181,6 +227,12 @@ def standardize_marker_dataframe(
         if original != canonical
     }
     result.rename(columns=rename_columns, inplace=True)
+    roles, role_column = normalize_marker_roles(result)
+    has_marker_role = roles is not None
+    if has_marker_role:
+        if role_column != "marker_role":
+            result.rename(columns={role_column: "marker_role"}, inplace=True)
+        result["marker_role"] = roles
 
     required_present = [column for column in ("group", "names") if column in result]
     if required_present:
@@ -190,7 +242,14 @@ def standardize_marker_dataframe(
 
     if "logfoldchanges" in result.columns:
         lfc_values = pd.to_numeric(result["logfoldchanges"], errors="coerce")
-        result = result.loc[lfc_values >= log2fc_min]
+        if has_marker_role:
+            negative_mask = result["marker_role"] == "negative"
+            keep_lfc = pd.Series(False, index=result.index)
+            keep_lfc.loc[negative_mask] = lfc_values.loc[negative_mask].abs() >= log2fc_min
+            keep_lfc.loc[~negative_mask] = lfc_values.loc[~negative_mask] >= log2fc_min
+            result = result.loc[keep_lfc]
+        else:
+            result = result.loc[lfc_values >= log2fc_min]
     if "pvals_adj" in result.columns:
         padj_values = pd.to_numeric(result["pvals_adj"], errors="coerce")
         result = result.loc[padj_values <= pval_cutoff]
@@ -218,16 +277,31 @@ def standardize_marker_dataframe(
             if sort_by_column is None and sort_column == "pvals_adj"
             else ascending
         )
-        result = result.sort_values(sort_column, ascending=sort_ascending, kind="stable")
+        if has_marker_role and sort_column == "logfoldchanges":
+            result["_easydecon_sort_value"] = pd.to_numeric(
+                result[sort_column], errors="coerce"
+            )
+            negative_mask = result["marker_role"] == "negative"
+            result.loc[negative_mask, "_easydecon_sort_value"] = result.loc[
+                negative_mask, "_easydecon_sort_value"
+            ].abs()
+            result = result.sort_values(
+                "_easydecon_sort_value", ascending=sort_ascending, kind="stable"
+            ).drop(columns="_easydecon_sort_value")
+        else:
+            result = result.sort_values(sort_column, ascending=sort_ascending, kind="stable")
 
     if {"group", "names"}.issubset(result.columns):
-        result = result.drop_duplicates(subset=["group", "names"], keep="first")
+        deduplicate_by = ["group", "names", "marker_role"] if has_marker_role else ["group", "names"]
+        group_by = ["group", "marker_role"] if has_marker_role else ["group"]
+        result = result.drop_duplicates(subset=deduplicate_by, keep="first")
         if top_n_genes is not None:
+            groupers = [result[column] for column in group_by]
             result = result.groupby(
-                result["group"], sort=False, group_keys=False
+                groupers, sort=False, group_keys=False
             ).head(top_n_genes)
         result["marker_rank"] = (
-            result.groupby(result["group"], sort=False).cumcount() + 1
+            result.groupby([result[column] for column in group_by], sort=False).cumcount() + 1
         )
         result.set_index("group", drop=False, inplace=True)
     else:
@@ -284,6 +358,8 @@ __all__ = [
     "PADJ_ALIASES",
     "SCORE_ALIASES",
     "resolve_marker_columns",
+    "resolve_marker_role_column",
+    "normalize_marker_roles",
     "standardize_marker_dataframe",
     "get_table",
 ]

@@ -49,6 +49,7 @@ from .config import config
 from ._schema import (
     MarkerSchema,
     get_table,
+    normalize_marker_roles,
     resolve_marker_columns,
     standardize_marker_dataframe,
 )
@@ -57,9 +58,13 @@ from ._validation import (
     ASSIGN_METHODS,
     FILTERING_ALGORITHMS,
     MARKER_METHODS,
+    MARKER_ROLE_MODES,
     PHASE1_OUTPUT_STATS,
     PYDESEQ2_MARKER_METHODS,
+    REFERENCE_MARKER_METHODS,
     SIMILARITY_METHODS,
+    UCELL_MARKER_ROLES,
+    format_allowed_values,
     validate_choice,
     validate_probability_range,
 )
@@ -615,12 +620,38 @@ def get_clusters_by_similarity_on_tissue(
         "mean": function_row_mean,
         "median": function_row_median,
         "euclidean": function_row_euclidean,
-        "auc": function_row_auc_specific_v2
+        "auc": function_row_auc_specific_v2,
+        "ucell": function_row_ucell,
     }
     func = similarity_methods[method]
+    ucell_signatures = None
+    if method == "ucell":
+        ucell_signatures = _build_ucell_signatures(
+            markers_df,
+            gene_universe=table.var_names,
+            gene_id_column=gene_id_column,
+            celltype=celltype,
+            marker_role_column=kwargs.get("ucell_marker_role_column", "marker_role"),
+            weight_column=kwargs.get("weight_column", "logfoldchanges"),
+            top_n_markers=kwargs.get("top_n_markers", None),
+            drop_shared_markers=kwargs.get("drop_shared_markers", False),
+        )
     if len(spots_with_expression) == 0:
-        df = pd.DataFrame(0.0, index=table.obs.index, columns=marker_groups)
+        columns = ucell_signatures["groups"] if method == "ucell" else marker_groups
+        df = pd.DataFrame(0.0, index=table.obs.index, columns=columns)
         if method != "diagnostic" and add_to_obs:
+            if verbose:
+                print("Adding results to table.obs of sdata object")
+            table.obs.drop(columns=df.columns, inplace=True, errors="ignore")
+            table.obs = pd.merge(
+                table.obs, df, left_index=True, right_index=True, how="left"
+            )
+        return df
+    if method == "ucell" and len(ucell_signatures["marker_union"]) == 0:
+        df = pd.DataFrame(
+            0.0, index=table.obs.index, columns=ucell_signatures["groups"]
+        )
+        if add_to_obs:
             if verbose:
                 print("Adding results to table.obs of sdata object")
             table.obs.drop(columns=df.columns, inplace=True, errors="ignore")
@@ -636,15 +667,33 @@ def get_clusters_by_similarity_on_tissue(
         print("Batch size:", config.batch_size)
 
     # Run computations in parallel
+    if method == "ucell":
+        row_iterator = table[spots_with_expression, ucell_signatures["marker_union"]].to_df().iterrows()
+        total_rows = len(spots_with_expression)
+        row_kwargs = dict(
+            kwargs,
+            ucell_signatures=ucell_signatures,
+        )
+    else:
+        row_iterator = table[spots_with_expression,].to_df().iterrows()
+        total_rows = len(spots_with_expression)
+        row_kwargs = dict(kwargs)
+
     results = Parallel(
         n_jobs=config.n_jobs,
         batch_size=config.batch_size,
         backend="loky",  # Ensure workers do not inherit unnecessary imports
     )(
-        delayed(process_row_with_suppression)(row, func, markers_df=markers_df, gene_id_column=gene_id_column, **kwargs)
+        delayed(process_row_with_suppression)(
+            row,
+            func,
+            markers_df=markers_df,
+            gene_id_column=gene_id_column,
+            **row_kwargs,
+        )
         for _, row in tqdm(
-            table[spots_with_expression,].to_df().iterrows(),
-            total=len(spots_with_expression),
+            row_iterator,
+            total=total_rows,
             leave=True,
             position=0,
             disable=not verbose,
@@ -656,6 +705,8 @@ def get_clusters_by_similarity_on_tissue(
     result_df = pd.DataFrame(results)
     result_df.set_index("Index", inplace=True)
     result_df = result_df["assigned_cluster"].apply(pd.Series)
+    if method == "ucell":
+        result_df = result_df.reindex(columns=ucell_signatures["groups"], fill_value=0.0)
 
     # For spots not processed (e.g., excluded by common_group_name != 0)
     # fill with zeros or NaNs, depending on your needs
@@ -1054,7 +1105,20 @@ def read_markers_dataframe(sdata,
                            deseq_n_cpus=None,
                            deseq_quiet=True,
                            deseq_kwargs=None,
-                           deseq_stats_kwargs=None):
+                           deseq_stats_kwargs=None,
+                           reference_min_cells=25,
+                           reference_min_mean=2e-4,
+                           reference_min_log2fc=1.0,
+                           reference_min_detection=0.10,
+                           reference_min_detection_delta=0.05,
+                           reference_pseudocount=1e-9,
+                           reference_contrast="max_other",
+                           marker_roles: str = "shared",
+                           reference_presence_min_log2fc: float = 0.5,
+                           reference_presence_min_detection_delta: float = 0.0,
+                           reference_negative_min_log2fc: float = 1.0,
+                           reference_negative_min_detection: float = 0.10,
+                           reference_negative_min_detection_delta: float = 0.05):
     """
     Reads and processes marker genes data for spatial transcriptomics analysis.
 
@@ -1177,13 +1241,16 @@ def read_markers_dataframe(sdata,
     - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
     """
     validate_choice(marker_method, MARKER_METHODS, "marker_method")
+    validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
 
     generated_rank_genes_groups = False
     generated_pseudobulk_deseq = False
+    generated_reference_profile = False
     used_existing_rank_genes_groups = False
     prepared_markers_used = False
     marker_signature = None
     deseq_diagnostics = None
+    reference_diagnostics = None
     table = get_table(
         sdata,
         bin_size=bin_size,
@@ -1227,7 +1294,39 @@ def read_markers_dataframe(sdata,
                 ) from exc
         resolved_source = source if source is not None else "file"
     elif adata is not None:
-        if marker_method in PYDESEQ2_MARKER_METHODS:
+        if marker_method in REFERENCE_MARKER_METHODS:
+            from .markers import compute_reference_profile_markers
+
+            raw_df, reference_diagnostics = compute_reference_profile_markers(
+                adata,
+                groupby=groupby,
+                layer=layer,
+                min_cells_per_group=reference_min_cells,
+                min_mean_expression=reference_min_mean,
+                min_log2fc=reference_min_log2fc,
+                min_detection=reference_min_detection,
+                min_detection_delta=reference_min_detection_delta,
+                contrast=reference_contrast,
+                top_n_genes=None,
+                pseudocount=reference_pseudocount,
+                drop_ribosomal=False,
+                drop_mitochondrial=False,
+                marker_roles=marker_roles,
+                reference_presence_min_log2fc=reference_presence_min_log2fc,
+                reference_presence_min_detection_delta=reference_presence_min_detection_delta,
+                reference_negative_min_log2fc=reference_negative_min_log2fc,
+                reference_negative_min_detection=reference_negative_min_detection,
+                reference_negative_min_detection_delta=reference_negative_min_detection_delta,
+            )
+            generated_reference_profile = True
+            resolved_source = source if source is not None else "reference_profile"
+        elif marker_method in PYDESEQ2_MARKER_METHODS:
+            if marker_roles == "phase_specific":
+                raise ValueError(
+                    "Automatic phase-specific role generation is currently supported only for "
+                    "marker_method='reference'. Provide a marker table with marker_role for "
+                    "Scanpy or DESeq-derived markers."
+                )
             raw_df, deseq_diagnostics = compute_pseudobulk_deseq_markers(
                 adata,
                 groupby=groupby,
@@ -1246,6 +1345,12 @@ def read_markers_dataframe(sdata,
                 source if source is not None else "pydeseq2_pseudobulk"
             )
         else:
+            if marker_roles == "phase_specific":
+                raise ValueError(
+                    "Automatic phase-specific role generation is currently supported only for "
+                    "marker_method='reference'. Provide a marker table with marker_role for "
+                    "Scanpy or DESeq-derived markers."
+                )
             if _adata_has_rank_genes_groups(adata, key):
                 marker_adata = adata
                 source_detail = f"adata.uns[{key!r}]"
@@ -1332,6 +1437,7 @@ def read_markers_dataframe(sdata,
     generated_pseudobulk_deseq = (
         generated_pseudobulk_deseq if used_adata else False
     )
+    generated_reference_profile = generated_reference_profile if used_adata else False
 
     if verbose and generated_rank_genes_groups:
         print(
@@ -1364,12 +1470,20 @@ def read_markers_dataframe(sdata,
             "scanpy_method": scanpy_method if used_adata else None,
             "generated_pseudobulk_deseq": generated_pseudobulk_deseq,
             "pseudobulk_deseq": deseq_diagnostics,
+            "generated_reference_profile": generated_reference_profile,
+            "reference_profile": reference_diagnostics,
+            "reference_contrast": reference_contrast if generated_reference_profile else None,
             "prepared_markers_used": prepared_markers_used,
             "marker_signature": marker_signature,
             "marker_generation_reused": (
                 True if prepared_markers_used else used_existing_rank_genes_groups
             ),
         }
+        if "marker_role" in df.columns:
+            diagnostics["marker_roles"] = marker_roles
+            diagnostics["marker_role_counts"] = (
+                df["marker_role"].value_counts().astype(int).to_dict()
+            )
         return df, diagnostics
 
     return df
@@ -1696,6 +1810,296 @@ def _select_unique_winner(
     if top_score - second_score <= tie_tolerance:
         return np.nan
     return sorted_scores.index[0]
+
+
+def _validate_optional_positive_integer(value, name):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or int(value) < 1:
+        raise ValueError(f"{name} must be None or an integer greater than or equal to 1.")
+    return int(value)
+
+
+def _validate_nonempty_string(value, name):
+    if not isinstance(value, str) or value.strip() == "":
+        raise ValueError(f"{name} must be a non-empty string.")
+    return value
+
+
+def _ordered_unique(values):
+    seen = set()
+    ordered = []
+    for value in values:
+        value = str(value)
+        if value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
+
+
+def _sort_ucell_role_markers(group_role_df, gene_id_column, weight_column):
+    work = group_role_df.copy()
+    if weight_column in work.columns:
+        work["_ucell_sort_weight"] = pd.to_numeric(work[weight_column], errors="coerce")
+        if "_ucell_role" in work.columns and (work["_ucell_role"] == "negative").all():
+            work["_ucell_sort_weight"] = work["_ucell_sort_weight"].abs()
+        work = work.sort_values(
+            "_ucell_sort_weight",
+            ascending=False,
+            kind="stable",
+            na_position="last",
+        )
+    elif "marker_rank" in work.columns:
+        work["_ucell_sort_rank"] = pd.to_numeric(work["marker_rank"], errors="coerce")
+        work = work.sort_values(
+            "_ucell_sort_rank",
+            ascending=True,
+            kind="stable",
+            na_position="last",
+        )
+    return _ordered_unique(work[gene_id_column].dropna().astype(str).tolist())
+
+
+def _build_ucell_signatures(
+    markers_df,
+    gene_universe,
+    gene_id_column="names",
+    celltype="group",
+    marker_role_column="marker_role",
+    weight_column="logfoldchanges",
+    top_n_markers=None,
+    drop_shared_markers=False,
+) -> dict:
+    """Build deterministic UCell-like marker signatures once per Phase 2 run."""
+    top_n_markers = _validate_optional_positive_integer(
+        top_n_markers, "top_n_markers"
+    )
+    if not isinstance(drop_shared_markers, bool):
+        raise ValueError("drop_shared_markers must be a bool.")
+    _validate_nonempty_string(marker_role_column, "ucell_marker_role_column")
+    if not isinstance(markers_df, pd.DataFrame):
+        raise TypeError("markers_df must be a pandas DataFrame.")
+
+    raw_columns = resolve_marker_columns(
+        markers_df,
+        MarkerSchema(group_col=celltype, gene_col=gene_id_column),
+    )
+    if (
+        "group" in raw_columns
+        and "names" in raw_columns
+        and marker_role_column in markers_df.columns
+    ):
+        raw_roles = markers_df[marker_role_column]
+        raw_roles = (
+            raw_roles.where(~raw_roles.isna(), "positive")
+            .astype(str)
+            .str.strip()
+            .str.casefold()
+            .replace("", "positive")
+        )
+        raw_role_df = pd.DataFrame(
+            {
+                "group": markers_df[raw_columns["group"]].astype(str),
+                "names": markers_df[raw_columns["names"]].astype(str),
+                "_ucell_role": raw_roles,
+            }
+        ).reset_index(drop=True)
+        raw_role_df = raw_role_df[
+            raw_role_df["_ucell_role"].isin(["positive", "identity", "negative"])
+        ]
+        for (group, gene), roles in raw_role_df.groupby(
+            [raw_role_df["group"], raw_role_df["names"]]
+        )["_ucell_role"]:
+            role_set = set(roles)
+            if role_set.intersection({"positive", "identity"}) and "negative" in role_set:
+                raise ValueError(
+                    f"Markers for group {group!r} contain genes marked as both "
+                    f"positive and negative: {[gene]}."
+                )
+
+    work = standardize_marker_dataframe(
+        markers_df,
+        schema=MarkerSchema(group_col=celltype, gene_col=gene_id_column),
+        gene_universe=None,
+        top_n_genes=None,
+        sort_by_column=None,
+        log2fc_min=-np.inf,
+        pval_cutoff=1.0,
+        source=None,
+    )
+    work = work.reset_index(drop=True)
+    gene_id_column = "names"
+    celltype = "group"
+    groups = work[celltype].drop_duplicates().astype(str).tolist()
+
+    roles, role_column = normalize_marker_roles(
+        work,
+        marker_role_column=marker_role_column,
+        fill_missing_column=True,
+    )
+    work["_ucell_role"] = roles
+
+    positive = {}
+    negative = {}
+    counts = {}
+    for group in groups:
+        group_df = work[work[celltype].astype(str) == str(group)]
+        pos_df = group_df[group_df["_ucell_role"].isin(["positive", "identity"])]
+        neg_df = group_df[group_df["_ucell_role"] == "negative"]
+        pos_genes = _sort_ucell_role_markers(pos_df, gene_id_column, weight_column)
+        neg_genes = _sort_ucell_role_markers(neg_df, gene_id_column, weight_column)
+        if top_n_markers is not None:
+            pos_genes = pos_genes[:top_n_markers]
+            neg_genes = neg_genes[:top_n_markers]
+        conflicts = sorted(set(pos_genes).intersection(neg_genes))
+        if conflicts:
+            raise ValueError(
+                f"Markers for group {group!r} contain genes marked as both "
+                f"positive and negative: {conflicts}."
+            )
+        positive[group] = list(pos_genes)
+        negative[group] = list(neg_genes)
+
+    if drop_shared_markers:
+        all_positive = pd.Series(
+            [gene for genes in positive.values() for gene in genes], dtype="object"
+        )
+        shared_counts = all_positive.value_counts() if not all_positive.empty else {}
+        positive = {
+            group: [gene for gene in genes if shared_counts.get(gene, 0) == 1]
+            for group, genes in positive.items()
+        }
+
+    gene_universe = pd.Index([str(gene) for gene in gene_universe])
+    gene_positions = {gene: idx for idx, gene in enumerate(gene_universe)}
+    positive_indexed = {}
+    negative_indexed = {}
+    marker_genes = set()
+    for group in groups:
+        pos = [gene for gene in positive[group] if gene in gene_positions]
+        neg = [gene for gene in negative[group] if gene in gene_positions]
+        positive_indexed[group] = pd.Index(pos)
+        negative_indexed[group] = pd.Index(neg)
+        marker_genes.update(pos)
+        marker_genes.update(neg)
+        counts[group] = {
+            "n_positive": int(len(pos)),
+            "n_negative": int(len(neg)),
+        }
+    marker_union = pd.Index([gene for gene in gene_universe if gene in marker_genes])
+    return {
+        "groups": groups,
+        "positive": positive_indexed,
+        "negative": negative_indexed,
+        "marker_union": marker_union,
+        "counts": counts,
+    }
+
+
+def _rank_u_signature_score(
+    ranks,
+    signature_genes,
+    max_rank,
+) -> float:
+    n = len(signature_genes)
+    if n == 0:
+        return 0.0
+    if max_rank < n:
+        return 0.0
+    max_u = n * (max_rank + 1) - n * (n + 1) / 2
+    if max_u <= 0:
+        return 0.0
+    u_value = ranks.loc[signature_genes].sum() - n * (n + 1) / 2
+    score = 1 - (u_value / max_u)
+    if not np.isfinite(score):
+        return 0.0
+    return float(np.clip(score, 0.0, 1.0))
+
+
+def function_row_ucell(row, markers_df=None, **kwargs):
+    """UCell-like normalized rank-U signature score for one spatial location."""
+    signatures = kwargs.get("ucell_signatures")
+    if signatures is None:
+        signatures = _build_ucell_signatures(
+            markers_df,
+            gene_universe=row.index,
+            gene_id_column=kwargs.get("gene_id_column", "names"),
+            celltype=kwargs.get("celltype", "group"),
+            marker_role_column=kwargs.get("ucell_marker_role_column", "marker_role"),
+            weight_column=kwargs.get("weight_column", "logfoldchanges"),
+            top_n_markers=kwargs.get("top_n_markers", None),
+            drop_shared_markers=kwargs.get("drop_shared_markers", False),
+        )
+    groups = signatures["groups"]
+    marker_union = signatures["marker_union"]
+    if len(marker_union) == 0:
+        return {group: 0.0 for group in groups}
+
+    min_markers = _validate_optional_positive_integer(
+        kwargs.get("min_markers", 3), "min_markers"
+    )
+    expression_threshold = _validate_finite_nonnegative(
+        kwargs.get("expression_threshold", 0.0), "expression_threshold"
+    )
+    recovery_power = _validate_finite_nonnegative(
+        kwargs.get("recovery_power", 1.0), "recovery_power"
+    )
+    ucell_max_rank = _validate_optional_positive_integer(
+        kwargs.get("ucell_max_rank", None), "ucell_max_rank"
+    )
+    ucell_negative_weight = _validate_finite_nonnegative(
+        kwargs.get("ucell_negative_weight", 1.0), "ucell_negative_weight"
+    )
+
+    expression = pd.to_numeric(row.reindex(marker_union), errors="coerce")
+    expression = expression.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    expression = expression.where(expression > expression_threshold, 0.0)
+    if expression.max() <= 0:
+        return {group: 0.0 for group in groups}
+    if len(expression) > 1 and expression.max() - expression.min() <= 1e-12:
+        return {group: 0.0 for group in groups}
+
+    effective_max_rank = (
+        len(marker_union)
+        if ucell_max_rank is None
+        else min(int(ucell_max_rank), len(marker_union))
+    )
+    ranks = expression.rank(method="average", ascending=False)
+    capped_ranks = ranks.clip(upper=effective_max_rank + 1)
+    scores = {}
+    for group in groups:
+        positive_genes = signatures["positive"][group]
+        negative_genes = signatures["negative"][group]
+        if len(positive_genes) < min_markers:
+            scores[group] = 0.0
+            continue
+        detected_positive = expression.loc[positive_genes] > 0
+        n_detected_positive = int(detected_positive.sum())
+        if n_detected_positive < min_markers:
+            scores[group] = 0.0
+            continue
+        positive_score = _rank_u_signature_score(
+            capped_ranks,
+            positive_genes,
+            effective_max_rank,
+        )
+        if len(negative_genes) == 0:
+            negative_score = 0.0
+        else:
+            detected_negative = expression.loc[negative_genes] > 0
+            if int(detected_negative.sum()) == 0:
+                negative_score = 0.0
+            else:
+                negative_score = _rank_u_signature_score(
+                    capped_ranks,
+                    negative_genes,
+                    effective_max_rank,
+                )
+        recovery = n_detected_positive / float(len(positive_genes))
+        score = max(0.0, positive_score - ucell_negative_weight * negative_score)
+        score *= recovery ** recovery_power
+        scores[group] = float(np.clip(score if np.isfinite(score) else 0.0, 0.0, 1.0))
+    return scores
 
 
 
