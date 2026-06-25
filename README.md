@@ -115,6 +115,19 @@ assignments. The default is disabled. Full hierarchical refinement can use
 child Phase 1 priors for pruning; `refine_group(mode="phase2")` cannot because
 it does not calculate child priors.
 
+## Synthetic validation
+
+```bash
+python benchmarks/run_synthetic_validation.py \
+    --scenarios clean,dropout,shared_markers \
+    --output-dir validation_output
+```
+
+The suite compares supported methods on deterministic synthetic data and
+reports recovery, abstention, posterior ranking, and runtime metrics. Synthetic
+results are useful implementation checks, but they do not establish biological
+performance.
+
 ## Refining a broad cell type into subclusters
 
 Use `refine_group` to split one coarse parent group into subtype labels without
