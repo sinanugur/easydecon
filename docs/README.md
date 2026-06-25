@@ -1,6 +1,6 @@
 # easydecon documentation
 
-- Getting started: see the root [README](../README.md).
+- Getting started: [usage.rst](usage.rst).
 - Understanding results: [results.md](results.md).
 - Visualization recipes: [visualization.md](visualization.md).
 - Refining broad groups into subclusters: [refinement.md](refinement.md).

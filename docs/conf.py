@@ -1,18 +1,27 @@
 import os
 import sys
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/easydecon-matplotlib")
 
 # Add project root to sys.path for autodoc
 sys.path.insert(0, os.path.abspath('..'))
 
 project = 'easydecon'
 author = 'Project contributors'
-release = '0.1.0'
+release = (
+    (Path(__file__).resolve().parents[1] / "easydecon" / "_version.py")
+    .read_text(encoding="utf-8")
+    .split('__version__ = "')[1]
+    .split('"')[0]
+)
 
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
     'sphinx.ext.napoleon',
     'sphinx.ext.viewcode',
+    'myst_parser',
 ]
 
 templates_path = ['_templates']
@@ -25,21 +34,13 @@ autodoc_default_options = {
     'show-inheritance': False,
 }
 
-# Mock optional dependencies to keep autodoc light-weight
+# Mock optional/problematic dependencies to keep autodoc light-weight.
 autodoc_mock_imports = [
     'scanpy',
     'fireducks',
-    'pandas',
     'spatialdata',
     'spatialdata_io',
     'spatialdata_plot',
-    'numpy',
-    'scipy',
-    'tqdm',
-    'sklearn',
-    'joblib',
-    'matplotlib',
-    'matplotlib.pyplot',
     'squidpy',
     'tensorflow',
     'bin2cell'
@@ -47,4 +48,4 @@ autodoc_mock_imports = [
 
 
 html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
+html_static_path = ['_static'] if (Path(__file__).parent / '_static').exists() else []
