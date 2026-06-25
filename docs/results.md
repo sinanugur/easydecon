@@ -54,6 +54,16 @@ Sparse spatial matrices are processed row-wise during Phase 2 without
 densifying the complete spatial matrix. Individual selected rows are converted
 as needed for scoring.
 
+## Candidate-pruned Phase 2 results
+
+When `phase2_candidate_pruning=True`, Phase 1 priors define which cell types are
+scored at each spatial location. Noncandidate entries are zero in
+`phase2_result` and `likelihoods_df`. With the default pruning threshold of
+zero and `prior_weight > 0`, the final `posterior_df` is expected to match the
+unpruned posterior for non-negative similarity methods. Positive pruning
+thresholds are intentionally more aggressive and can change posterior
+probabilities or hard labels.
+
 ```python
 summary = ed.summarize_easydecon_result(
     result,

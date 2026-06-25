@@ -527,6 +527,7 @@ def get_clusters_by_similarity_on_tissue(
     add_to_obs=False,
     verbose=True,
     _diagnostics_out=None,
+    _candidate_mask=None,
     **kwargs,
 ):
     """
@@ -609,6 +610,46 @@ def get_clusters_by_similarity_on_tissue(
         **cache_kwargs,
     )
     phase2_cache.diagnostics["sparse_input"] = bool(issparse(table.X))
+    aligned_candidate_mask = None
+    if _candidate_mask is not None:
+        if not isinstance(_candidate_mask, pd.DataFrame):
+            raise TypeError("_candidate_mask must be a pandas DataFrame.")
+        aligned_candidate_mask = (
+            _candidate_mask.reindex(
+                index=table.obs.index,
+                columns=phase2_cache.groups,
+                fill_value=False,
+            )
+            .fillna(False)
+            .astype(bool)
+        )
+        candidate_counts = aligned_candidate_mask.sum(axis=1).astype(int)
+        active_counts = candidate_counts[candidate_counts > 0]
+        total_pairs = int(aligned_candidate_mask.shape[0] * aligned_candidate_mask.shape[1])
+        n_candidate_pairs = int(candidate_counts.sum())
+        phase2_cache.diagnostics.update(
+            {
+                "candidate_pruning_enabled": True,
+                "n_total_location_group_pairs": total_pairs,
+                "n_candidate_pairs": n_candidate_pairs,
+                "candidate_fraction": (
+                    float(n_candidate_pairs / total_pairs) if total_pairs else 0.0
+                ),
+                "n_rows_with_candidates": int((candidate_counts > 0).sum()),
+                "n_rows_without_candidates": int((candidate_counts == 0).sum()),
+                "min_candidates_per_active_row": (
+                    int(active_counts.min()) if len(active_counts) else 0
+                ),
+                "median_candidates_per_active_row": (
+                    float(active_counts.median()) if len(active_counts) else 0.0
+                ),
+                "max_candidates_per_active_row": (
+                    int(active_counts.max()) if len(active_counts) else 0
+                ),
+            }
+        )
+    else:
+        phase2_cache.diagnostics["candidate_pruning_enabled"] = False
     if _diagnostics_out is not None:
         _diagnostics_out.update(phase2_cache.diagnostics)
 
@@ -626,6 +667,11 @@ def get_clusters_by_similarity_on_tissue(
         if verbose:
             print("common_group_name column not found in the table, processing all spots.")
         spots_with_expression = table.obs.index
+    if aligned_candidate_mask is not None:
+        has_candidates = aligned_candidate_mask.any(axis=1)
+        spots_with_expression = pd.Index(spots_with_expression).intersection(
+            has_candidates[has_candidates].index
+        )
 
     # Select similarity function based on method
     similarity_methods = {
@@ -681,6 +727,9 @@ def get_clusters_by_similarity_on_tissue(
     )
     total_rows = len(spots_with_expression)
     row_kwargs = dict(kwargs, phase2_cache=phase2_cache)
+    group_position_lookup = {
+        group: idx for idx, group in enumerate(phase2_cache.groups)
+    }
 
     results = Parallel(
         n_jobs=config.n_jobs,
@@ -692,9 +741,19 @@ def get_clusters_by_similarity_on_tissue(
             func,
             markers_df=None,
             gene_id_column=gene_id_column,
+            candidate_group_positions=(
+                tuple(
+                    group_position_lookup[group]
+                    for group in aligned_candidate_mask.columns[
+                        aligned_candidate_mask.loc[obs_name].to_numpy(dtype=bool)
+                    ]
+                )
+                if aligned_candidate_mask is not None
+                else None
+            ),
             **row_kwargs,
         )
-        for _, row in tqdm(
+        for obs_name, row in tqdm(
             row_iterator,
             total=total_rows,
             leave=True,
@@ -705,10 +764,20 @@ def get_clusters_by_similarity_on_tissue(
 
 
     # Convert results to a DataFrame
-    result_df = pd.DataFrame(results)
-    result_df.set_index("Index", inplace=True)
-    result_df = result_df["assigned_cluster"].apply(pd.Series)
-    result_df = result_df.reindex(columns=phase2_cache.groups, fill_value=0.0)
+    if results:
+        result_df = pd.DataFrame(results)
+        result_df.set_index("Index", inplace=True)
+        result_df = result_df["assigned_cluster"].apply(pd.Series)
+        result_df = (
+            result_df.reindex(columns=phase2_cache.groups, fill_value=0.0)
+            .fillna(0.0)
+        )
+    else:
+        result_df = pd.DataFrame(
+            0.0,
+            index=pd.Index([], name=table.obs.index.name),
+            columns=phase2_cache.groups,
+        )
 
     # For spots not processed (e.g., excluded by common_group_name != 0)
     # fill with zeros or NaNs, depending on your needs
@@ -1775,6 +1844,17 @@ def process_row(row,func, **kwargs):
     })
 
 
+def _candidate_groups_for_cache(phase2_cache, kwargs):
+    positions = kwargs.get("candidate_group_positions")
+    if positions is None:
+        return phase2_cache.groups
+    return tuple(
+        phase2_cache.groups[int(pos)]
+        for pos in positions
+        if 0 <= int(pos) < len(phase2_cache.groups)
+    )
+
+
 MARKER_UNION_SAFE_METHODS = frozenset(
     {
         "correlation",
@@ -2329,6 +2409,8 @@ def function_row_ucell(row, markers_df=None, **kwargs):
             drop_shared_markers=kwargs.get("drop_shared_markers", False),
         )
     groups = signatures["groups"]
+    if phase2_cache is not None:
+        groups = _candidate_groups_for_cache(phase2_cache, kwargs)
     marker_union = signatures["marker_union"]
     if len(marker_union) == 0:
         return {group: 0.0 for group in groups}
@@ -2405,7 +2487,7 @@ def function_row_spearman(row, markers_df,**kwargs):
     phase2_cache = kwargs.get("phase2_cache")
     if phase2_cache is not None:
         a = {}
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             vector_series = phase2_cache.group_reference_values.get(c)
             if vector_series is None:
                 a[c] = 0.0
@@ -2466,7 +2548,7 @@ def function_row_cosine(row, markers_df,**kwargs):
     phase2_cache = kwargs.get("phase2_cache")
     if phase2_cache is not None:
         a = {}
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             vector_series = phase2_cache.group_reference_values.get(c)
             if vector_series is None:
                 a[c] = 0.0
@@ -2521,7 +2603,7 @@ def function_row_euclidean(row, markers_df, **kwargs):
     phase2_cache = kwargs.get("phase2_cache")
     if phase2_cache is not None:
         a = {}
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             vector_series = phase2_cache.group_reference_values.get(c)
             if vector_series is None:
                 a[c] = 0.0
@@ -2779,14 +2861,15 @@ def function_row_auc_specific_v2(row, markers_df, **kwargs):
         center_auc = kwargs.get("center_auc", True)
         marker_union = signatures["marker_union"]
         marker_lists = signatures["marker_lists"]
+        groups = _candidate_groups_for_cache(phase2_cache, kwargs)
         if len(marker_union) < 2:
-            return {c: fallback_score for c in signatures["groups"]}
+            return {c: fallback_score for c in groups}
         x = row.reindex(marker_union).fillna(0.0).astype(float)
         if expr_threshold is not None and expr_threshold > 0:
             x = x.where(x > expr_threshold, 0.0)
         ranks = x.rank(method="average", ascending=True)
         scores = {}
-        for c in signatures["groups"]:
+        for c in groups:
             pos = pd.Index(marker_lists[c]).intersection(marker_union)
             n_pos = len(pos)
             n_neg = len(marker_union) - n_pos
@@ -2919,7 +3002,7 @@ def function_row_jaccard(row, markers_df, **kwargs):
                 else len(row_set.intersection(phase2_cache.group_marker_sets[c]))
                 / len(row_set.union(phase2_cache.group_marker_sets[c]))
             )
-            for c in phase2_cache.groups
+            for c in _candidate_groups_for_cache(phase2_cache, kwargs)
         }
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
@@ -2948,7 +3031,7 @@ def function_row_overlap(row, markers_df, **kwargs):
     if phase2_cache is not None:
         row_set = set(row[row > 0].sort_values(ascending=False).index)
         scores = {}
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             vector_set = phase2_cache.group_marker_sets[c]
             denominator = min(len(row_set), len(vector_set))
             scores[c] = (
@@ -2983,7 +3066,7 @@ def function_row_diagnostic(row, markers_df, **kwargs):
         row_set = set(row[row > 0].sort_values(ascending=False).index)
         return {
             c: row_set.intersection(phase2_cache.group_marker_sets[c])
-            for c in phase2_cache.groups
+            for c in _candidate_groups_for_cache(phase2_cache, kwargs)
         }
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
@@ -3003,7 +3086,7 @@ def function_row_sum(row, markers_df, **kwargs):
             c: float(row.iloc[list(phase2_cache.group_gene_positions[c])].fillna(0.0).sum())
             if len(phase2_cache.group_gene_positions[c]) > 0
             else 0.0
-            for c in phase2_cache.groups
+            for c in _candidate_groups_for_cache(phase2_cache, kwargs)
         }
     a = {}
     gene_id_column=kwargs.get("gene_id_column")
@@ -3023,7 +3106,7 @@ def function_row_mean(row, markers_df, **kwargs):
     phase2_cache = kwargs.get("phase2_cache")
     if phase2_cache is not None:
         scores = {}
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             positions = phase2_cache.group_gene_positions[c]
             if len(positions) == 0:
                 scores[c] = 0.0
@@ -3052,7 +3135,7 @@ def function_row_median(row, markers_df, **kwargs):
     phase2_cache = kwargs.get("phase2_cache")
     if phase2_cache is not None:
         scores = {}
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             positions = phase2_cache.group_gene_positions[c]
             if len(positions) == 0:
                 scores[c] = 0.0
@@ -3090,7 +3173,7 @@ def function_row_weighted_jaccard(row, markers_df, **kwargs):
         if target_weights.index.has_duplicates:
             target_weights = target_weights.groupby(level=0).max()
 
-        for c in phase2_cache.groups:
+        for c in _candidate_groups_for_cache(phase2_cache, kwargs):
             cluster_weights = phase2_cache.group_weights[c]
             all_genes = set(cluster_weights.index).union(target_weights.index)
             numerator = 0.0

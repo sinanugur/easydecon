@@ -7,6 +7,7 @@
 - Reference-profile markers: [reference_markers.md](reference_markers.md).
 - UCell-like Phase 2 scoring: [ucell.md](ucell.md).
 - Marker roles and phase-specific routing: [marker_roles.md](marker_roles.md).
+- Optional Phase 2 candidate pruning: [candidate_pruning.md](candidate_pruning.md).
 
 ## Workflow overview
 

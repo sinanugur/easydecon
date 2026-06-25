@@ -27,6 +27,7 @@ def _evidence_to_likelihood(
     evidence_df,
     method="softmax",
     softmax_tau=1.0,
+    candidate_mask=None,
 ) -> pd.DataFrame:
     """Transform Phase 2 evidence into likelihoods.
 
@@ -34,7 +35,41 @@ def _evidence_to_likelihood(
     ``row_normalize`` and ``softmax``.
     """
     evidence_df = evidence_df.copy()
+    if candidate_mask is not None:
+        candidate_mask = _align_candidate_mask(
+            candidate_mask,
+            index=evidence_df.index,
+            columns=evidence_df.columns,
+        )
+
     if method == "row_normalize":
+        if candidate_mask is not None:
+            numeric = evidence_df.apply(pd.to_numeric, errors="coerce")
+            numeric = numeric.replace([np.inf, -np.inf], np.nan)
+            values = numeric.to_numpy(dtype=float)
+            mask = candidate_mask.to_numpy(dtype=bool)
+            likelihoods_np = np.zeros_like(values, dtype=float)
+            for row_idx in range(values.shape[0]):
+                row_mask = mask[row_idx]
+                if not bool(row_mask.any()):
+                    continue
+                candidate_values = values[row_idx, row_mask]
+                finite = np.isfinite(candidate_values)
+                if not bool(finite.any()):
+                    continue
+                clean_values = np.where(finite, candidate_values, 0.0)
+                row_min = np.nanmin(clean_values[finite])
+                if row_min < 0:
+                    clean_values = clean_values - row_min
+                clean_values = np.clip(clean_values, 0.0, None)
+                total = clean_values.sum()
+                if total > 0:
+                    likelihoods_np[row_idx, row_mask] = clean_values / total
+            return pd.DataFrame(
+                likelihoods_np,
+                index=evidence_df.index,
+                columns=evidence_df.columns,
+            )
         min_per_row = evidence_df.min(axis=1)
         needs_shift = min_per_row < 0
         if needs_shift.any():
@@ -46,11 +81,16 @@ def _evidence_to_likelihood(
     if method == "softmax":
         x = evidence_df.to_numpy(dtype=float)
         x = np.where(np.isfinite(x), x, -np.inf)
+        if candidate_mask is not None:
+            mask = candidate_mask.to_numpy(dtype=bool)
+            x = np.where(mask, x, -np.inf)
         row_max = np.max(x, axis=1, keepdims=True)
         valid_rows = np.isfinite(row_max[:, 0])
         logits = np.zeros_like(x, dtype=float)
         valid_logits = (x[valid_rows] - row_max[valid_rows]) / softmax_tau
         logits[valid_rows] = np.exp(valid_logits)
+        if candidate_mask is not None:
+            logits = np.where(mask, logits, 0.0)
         row_sum = np.sum(logits, axis=1, keepdims=True)
         row_sum[row_sum == 0] = np.nan
         likelihoods_np = logits / row_sum
@@ -62,6 +102,73 @@ def _evidence_to_likelihood(
         )
 
     raise ValueError("evidence_to_likelihood must be 'row_normalize' or 'softmax'.")
+
+
+def _align_candidate_mask(candidate_mask, index, columns) -> pd.DataFrame:
+    """Return a boolean candidate mask aligned to an output matrix shape."""
+    if not isinstance(candidate_mask, pd.DataFrame):
+        raise TypeError("candidate_mask must be a pandas DataFrame.")
+    return (
+        candidate_mask.reindex(index=index, columns=columns, fill_value=False)
+        .fillna(False)
+        .astype(bool)
+    )
+
+
+def _build_phase2_candidate_mask(
+    priors_df,
+    phase2_groups,
+    spatial_index,
+    threshold=0.0,
+) -> pd.DataFrame:
+    """Build a group-aware Phase 2 candidate mask from Phase 1 priors."""
+    if not isinstance(priors_df, pd.DataFrame):
+        raise TypeError("priors_df must be a pandas DataFrame.")
+    _validate_finite_nonnegative(threshold, "phase2_candidate_threshold")
+    groups = [str(group) for group in phase2_groups]
+    aligned = priors_df.reindex(index=spatial_index, columns=groups)
+    numeric = aligned.apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    numeric = numeric.clip(lower=0.0)
+    return (numeric > threshold).astype(bool)
+
+
+def _summarize_candidate_mask(candidate_mask, *, enabled, threshold) -> dict:
+    """Compact diagnostics for Phase 2 candidate pruning."""
+    exact = float(threshold) == 0.0
+    summary = {
+        "candidate_pruning_enabled": bool(enabled),
+        "candidate_threshold": float(threshold),
+        "exact_candidate_pruning": bool(enabled and exact),
+    }
+    if candidate_mask is None:
+        return summary
+    mask = candidate_mask.astype(bool)
+    total_pairs = int(mask.shape[0] * mask.shape[1])
+    candidate_counts = mask.sum(axis=1).astype(int)
+    active_counts = candidate_counts[candidate_counts > 0]
+    n_candidate_pairs = int(candidate_counts.sum())
+    summary.update(
+        {
+            "n_total_location_group_pairs": total_pairs,
+            "n_candidate_pairs": n_candidate_pairs,
+            "candidate_fraction": (
+                float(n_candidate_pairs / total_pairs) if total_pairs else 0.0
+            ),
+            "n_rows_with_candidates": int((candidate_counts > 0).sum()),
+            "n_rows_without_candidates": int((candidate_counts == 0).sum()),
+            "min_candidates_per_active_row": (
+                int(active_counts.min()) if len(active_counts) else 0
+            ),
+            "median_candidates_per_active_row": (
+                float(active_counts.median()) if len(active_counts) else 0.0
+            ),
+            "max_candidates_per_active_row": (
+                int(active_counts.max()) if len(active_counts) else 0
+            ),
+        }
+    )
+    return summary
 
 
 @dataclass
@@ -172,6 +279,8 @@ def easydecon_workflow(
     # === Optional presence gating by priors ===
     apply_prior_presence_mask: bool = False,  # if True, priors gate likelihoods
     prior_presence_threshold: float = 0.0,    # threshold on priors for presence mask
+    phase2_candidate_pruning: bool = False,
+    phase2_candidate_threshold: float = 0.0,
     # === Final assignment: assign_clusters_from_df ===
     results_column: str = "easydecon",
     assign_method: str = "max",           # {"max","hybrid","zmax"} per your implementation
@@ -228,6 +337,23 @@ def easydecon_workflow(
         raise ValueError("center_auc must be a bool.")
     if prior_weight < 0 or likelihood_weight < 0:
         raise ValueError("prior_weight and likelihood_weight must be non-negative.")
+    if not isinstance(phase2_candidate_pruning, bool):
+        raise ValueError("phase2_candidate_pruning must be a bool.")
+    _validate_finite_nonnegative(
+        phase2_candidate_threshold, "phase2_candidate_threshold"
+    )
+    if phase2_candidate_pruning and prior_weight <= 0:
+        raise ValueError(
+            "phase2_candidate_pruning requires prior_weight > 0 because "
+            "candidate groups are derived from Phase 1 priors."
+        )
+    marker_genes_is_list = isinstance(marker_genes, list)
+    if phase2_candidate_pruning and marker_genes_is_list:
+        raise ValueError(
+            "phase2_candidate_pruning is not available for list-style "
+            "marker_genes workflows because Phase 1 does not produce "
+            "cell-type-specific priors."
+        )
 
     original_celltype = celltype
     original_gene_id_column = gene_id_column
@@ -299,7 +425,6 @@ def easydecon_workflow(
 
     celltype = "group"
     gene_id_column = "names"
-    marker_genes_is_list = isinstance(marker_genes, list)
     phase1_markers_df, phase2_markers_df, marker_role_diagnostics = (
         resolve_phase_marker_tables(
             markers_df,
@@ -394,6 +519,25 @@ def easydecon_workflow(
     # -----------------------
     # Phase 2: Evidence
     # -----------------------
+    phase2_groups = phase2_markers_df["group"].drop_duplicates().astype(str).tolist()
+    phase2_candidate_mask = None
+    candidate_pruning_summary = _summarize_candidate_mask(
+        None,
+        enabled=False,
+        threshold=phase2_candidate_threshold,
+    )
+    if phase2_candidate_pruning:
+        phase2_candidate_mask = _build_phase2_candidate_mask(
+            priors_df,
+            phase2_groups=phase2_groups,
+            spatial_index=table.obs.index,
+            threshold=phase2_candidate_threshold,
+        )
+        candidate_pruning_summary = _summarize_candidate_mask(
+            phase2_candidate_mask,
+            enabled=True,
+            threshold=phase2_candidate_threshold,
+        )
     phase2_performance = {}
     phase2_result = get_clusters_by_similarity_on_tissue(
         sdata=sdata,
@@ -420,6 +564,7 @@ def easydecon_workflow(
         ucell_marker_role_column=ucell_marker_role_column,
         verbose=verbose,
         _diagnostics_out=phase2_performance,
+        _candidate_mask=phase2_candidate_mask,
     )
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
@@ -428,6 +573,7 @@ def easydecon_workflow(
         phase2_result,
         method=evidence_to_likelihood,
         softmax_tau=softmax_tau,
+        candidate_mask=phase2_candidate_mask if phase2_candidate_pruning else None,
     )
 
 
@@ -447,6 +593,15 @@ def easydecon_workflow(
             raise ValueError("No overlapping spot/bin indices between Phase 1 and Phase 2 outputs.")
         priors_aligned = priors_aligned.loc[common_spots]
         likelihoods_aligned = likelihoods_aligned.loc[common_spots]
+
+        if phase2_candidate_pruning:
+            posterior_candidate_mask = _align_candidate_mask(
+                phase2_candidate_mask,
+                index=common_spots,
+                columns=common_clusters,
+            ).astype(float)
+            priors_aligned = priors_aligned * posterior_candidate_mask
+            likelihoods_aligned = likelihoods_aligned * posterior_candidate_mask
 
         # Optional: use priors as a presence/absence gate on BOTH priors and likelihoods
         if apply_prior_presence_mask:
@@ -524,7 +679,10 @@ def easydecon_workflow(
             "ucell_max_rank": ucell_max_rank,
             "ucell_negative_weight": ucell_negative_weight,
             "ucell_marker_role_column": ucell_marker_role_column,
-            "performance": phase2_performance,
+            "performance": {
+                **phase2_performance,
+                **candidate_pruning_summary,
+            },
         },
         "assignment": {
             "method": assign_method,

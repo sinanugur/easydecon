@@ -92,6 +92,29 @@ Use `posterior_df` for downstream probabilistic analyses, `assigned_labels` for
 hard maps, `priors_df` for presence gating, and `phase2_result` for raw
 similarity inspection. See [docs/results.md](docs/results.md) for details.
 
+## Optional Phase 2 candidate pruning
+
+Phase 2 candidate pruning can skip scoring cell types with zero Phase 1 prior
+at a spatial location:
+
+```python
+result = ed.run_easydecon(
+    sdata,
+    markers_df=markers_df,
+    phase2_candidate_pruning=True,
+    phase2_candidate_threshold=0.0,
+    return_result_object=True,
+)
+```
+
+With `phase2_candidate_threshold=0.0`, candidate groups are derived from
+positive Phase 1 priors and normally preserve the posterior when
+`prior_weight > 0`, while avoiding unnecessary Phase 2 scores. A positive
+threshold is more aggressive and can change likelihoods, posteriors, and hard
+assignments. The default is disabled. Full hierarchical refinement can use
+child Phase 1 priors for pruning; `refine_group(mode="phase2")` cannot because
+it does not calculate child priors.
+
 ## Refining a broad cell type into subclusters
 
 Use `refine_group` to split one coarse parent group into subtype labels without

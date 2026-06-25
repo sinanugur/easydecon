@@ -180,6 +180,8 @@ def refine_group(
     fold_change_threshold=2.0,
     minimum_evidence=0.0,
     tie_tolerance=1e-12,
+    phase2_candidate_pruning: bool = False,
+    phase2_candidate_threshold: float = 0.0,
     verbose=True,
     **workflow_kwargs,
 ) -> RefinedGroupResult:
@@ -191,6 +193,18 @@ def refine_group(
         raise ValueError("parent_threshold must be non-negative.")
     _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
     _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
+    if not isinstance(phase2_candidate_pruning, bool):
+        raise ValueError("phase2_candidate_pruning must be a bool.")
+    _validate_finite_nonnegative(
+        phase2_candidate_threshold, "phase2_candidate_threshold"
+    )
+    if mode == "phase2" and phase2_candidate_pruning:
+        raise ValueError(
+            "phase2_candidate_pruning is unavailable for refine_group(mode='phase2') "
+            "because this mode does not calculate child Phase 1 priors. Use "
+            "parent_threshold to restrict parent-positive locations, or use "
+            "mode='full'."
+        )
     _pop_blocked_workflow_kwargs(workflow_kwargs)
     workflow_kwargs.setdefault("marker_roles", marker_roles)
     workflow_kwargs.setdefault(
@@ -250,6 +264,8 @@ def refine_group(
             fold_change_threshold=fold_change_threshold,
             minimum_evidence=minimum_evidence,
             tie_tolerance=tie_tolerance,
+            phase2_candidate_pruning=phase2_candidate_pruning,
+            phase2_candidate_threshold=phase2_candidate_threshold,
             verbose=verbose,
             **workflow_kwargs,
         )
@@ -364,6 +380,16 @@ def refine_group(
             phase2_performance
             if mode == "phase2"
             else child_result.diagnostics.get("phase2", {}).get("performance")
+        ),
+        "phase2_candidate_pruning": (
+            {
+                "candidate_pruning_enabled": False,
+                "candidate_threshold": float(phase2_candidate_threshold),
+                "exact_candidate_pruning": False,
+            }
+            if mode == "phase2"
+            else child_result.diagnostics.get("phase2", {})
+            .get("performance", {})
         ),
         "phase2_method": workflow_kwargs.get("method", "wjaccard"),
         "minimum_evidence": minimum_evidence,
