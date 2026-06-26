@@ -1,79 +1,71 @@
 # Marker roles and phase-specific routing
 
-easydecon supports two marker-role modes:
+Marker roles let one marker table express different purposes for Phase 1 and
+Phase 2. The supported roles are:
 
-- `marker_roles="shared"`: the default. Existing marker workflows keep using
-  the same selected marker table for Phase 1 and Phase 2.
-- `marker_roles="phase_specific"`: Phase 1 and Phase 2 use role-selected
-  marker subsets.
+`positive`
+: A normal positive marker. Missing or blank roles become `positive`.
 
-## Roles
+`negative`
+: An anti-marker. Only UCell-like Phase 2 scoring interprets negative markers.
 
-- `presence`: sensitive markers used for Phase 1 marker-expression priors.
-- `identity`: specific markers used for Phase 2 similarity.
-- `positive`: accepted as identity-compatible for manually annotated marker
-  tables.
-- `negative`: anti-markers used only by UCell-like Phase 2 scoring.
+`presence`
+: A Phase 1 marker used to detect whether a group is plausible.
 
-The same group/gene can appear twice with different roles, especially as both
-`presence` and `identity`. This is intentional: a gene can help detect whether
-a group is plausible in Phase 1 and also help distinguish it in Phase 2.
+`identity`
+: A Phase 2 marker used to distinguish a group from others.
 
-## Reference-profile role generation
+Unknown role values raise an error. Negative direction is determined by
+`marker_role`, not by the sign of `logfoldchanges`. Signed values remain signed
+when they come from signed Scanpy inference.
 
-Automatic role generation is currently limited to reference-profile markers:
+## Routing modes
 
-```python
-prepared = ed.prepare_markers(
-    sc_adata,
-    marker_method="reference",
-    marker_roles="phase_specific",
-    groupby="cell_type",
-    layer="counts",
-)
-```
+`marker_roles="shared"`
+: The default. Without a role column, the same marker table is used for Phase 1
+  and Phase 2. With a role column, role-aware routing is applied.
 
-Reference-profile generation emits spatial-unfiltered rows with
-`marker_role`, profile metrics, `scores`, `logfoldchanges`, and
-`marker_source="reference_profile"`. Presence and identity rows use target
-expression enrichment. Negative rows use a positive penalty magnitude in
-`logfoldchanges` and `negative_log2fc`; UCell decides direction from
-`marker_role`, not from the sign.
+`marker_roles="phase_specific"`
+: Phase 1 and Phase 2 use role-selected subsets. This is generated
+  automatically only by reference-profile markers, unless you provide a manual
+  role table.
 
-## Manual marker tables
+## Shared mode routing
 
-Manually supplied `markers_df`, files, and `PreparedMarkers` may include a
-`marker_role` column. Missing or blank roles are treated as `positive`.
-Unknown roles raise an error.
+| Destination | Roles used |
+| --- | --- |
+| Phase 1 | `positive`, `presence`, `identity` |
+| UCell-like Phase 2 | `positive`, `identity`, `negative` |
+| Non-UCell Phase 2 | `positive`, `presence`, `identity` |
 
-Scanpy and PyDESeq2 marker generation do not infer phase-specific roles. To use
-`marker_roles="phase_specific"` with those marker sources, provide a marker
-table that already contains `marker_role`.
+## Phase-specific mode routing
 
-## Routing behavior
+| Destination | Roles used |
+| --- | --- |
+| Phase 1 | `presence` |
+| UCell-like Phase 2 | `positive`, `identity`, `negative` |
+| Non-UCell Phase 2 | `positive`, `identity` |
 
-In shared mode without a role column, Phase 1 and Phase 2 receive the same
-table.
+For `marker_roles="phase_specific"`, easydecon raises if no Phase 1 presence
+markers remain when Phase 1 is required, or if no Phase 2 identity-compatible
+markers remain.
 
-In shared mode with a role column:
+## Role generation
 
-- Phase 1 uses `positive`, `presence`, and `identity`.
-- UCell Phase 2 uses `positive`, `identity`, and `negative`.
-- Non-UCell Phase 2 uses `positive`, `presence`, and `identity`.
+Reference-profile marker generation can produce `presence`, `identity`, and
+`negative` roles with `marker_roles="phase_specific"`.
 
-In phase-specific mode:
+Scanpy and PyDESeq2 do not automatically generate phase-specific
+presence/identity roles. Provide a manual `marker_role` table if you need those
+roles with Scanpy or PyDESeq2 markers.
 
-- Phase 1 uses `presence`.
-- UCell Phase 2 uses `positive`, `identity`, and `negative`.
-- Non-UCell Phase 2 uses `positive` and `identity`.
+`marker_role_inference="scanpy_signed"` is a separate shared-mode feature for
+Scanpy-style signed rows. It creates only `positive` and `negative` roles and
+is useful with `method="ucell"`. It does not create phase-specific
+`presence`/`identity` roles.
 
-If `marker_genes` is provided to `run_easydecon`, it remains a Phase 1
-override. Role routing still applies to Phase 2.
+## Top-N with roles
 
-## Refinement
-
-`refine_group(..., mode="full", marker_roles="phase_specific")` runs child
-Phase 1 with presence markers and child Phase 2 with identity/negative markers.
-
-`mode="phase2"` does not run child Phase 1, so presence markers are ignored and
-only the Phase 2 role subset is used.
+When roles are present, `top_n_genes` is applied per group and role during
+standardization or phase routing. This means positive and negative markers can
+both retain their own top rows.

@@ -277,7 +277,7 @@ def standardize_marker_dataframe(
             if sort_by_column is None and sort_column == "pvals_adj"
             else ascending
         )
-        if has_marker_role and sort_column == "logfoldchanges":
+        if has_marker_role and sort_column in {"logfoldchanges", "scores"}:
             result["_easydecon_sort_value"] = pd.to_numeric(
                 result[sort_column], errors="coerce"
             )

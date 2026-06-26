@@ -1,46 +1,57 @@
-Getting Started
-===============
+Installation and quickstart
+===========================
+
+Supported Python
+----------------
+
+``easydecon`` requires Python 3.10 or newer. The package metadata currently
+advertises support for Python 3.10 through 3.13.
 
 Installation
 ------------
 
-It is recommended to install the package in a virtual environment or a Conda
-environment. To create a Conda environment, run the following command::
+Install the release package from PyPI::
 
-    conda create -n easydecon python=3.10.14
-    conda activate easydecon
+    python -m pip install easydecon
 
-You can install from PyPI::
+For development from a checkout::
 
-    pip install easydecon
+    python -m pip install -e ".[test]"
 
-Optional extras keep heavier dependencies out of the base install::
+Install optional extras only when needed::
 
-    pip install "easydecon[spatial]"
-    pip install "easydecon[deseq]"
+    python -m pip install -e ".[spatial]"
+    python -m pip install -e ".[deseq]"
+    python -m pip install -e ".[docs]"
+    python -m pip install -e ".[test]"
 
-To install directly from GitHub using pip into the active environment, run the
-following command::
+The ``spatial`` extra is needed for SpatialData containers and related
+plotting/query helpers. The ``deseq`` extra is needed for
+``marker_method="pydeseq2"``. Core AnnData workflows use the required package
+dependencies.
 
-    pip install git+https://github.com/sinanugur/easydecon.git
+Minimal input expectations
+--------------------------
 
+You need:
 
-Absolute Minimal Usage
-----------------------
+* an AnnData table, or a SpatialData object containing an AnnData-like table;
+* an expression matrix whose ``var_names`` are gene identifiers;
+* a marker table with at least ``group`` and ``names`` columns; and
+* marker gene identifiers that overlap the spatial expression ``var_names``.
+
+The generic term in the docs is "spatial location". A spatial location may be a
+spot, bin, or segmented cell depending on the upstream data.
+
+Minimal workflow
+----------------
 
 .. code-block:: python
 
     import easydecon as ed
 
-    # sdata can be a SpatialData object or an AnnData table with spatial data.
-    # Marker tables need at least group and names columns.
-    markers_df = ed.read_markers_dataframe(
-        sdata,
-        filename="scanpy_deseq_table.csv",
-    )
-
     result = ed.run_easydecon(
-        sdata,
+        sdata=sdata,
         markers_df=markers_df,
         filtering_algorithm="quantile",
         method="wjaccard",
@@ -48,78 +59,38 @@ Absolute Minimal Usage
         verbose=False,
     )
 
-    result.phase1_result
-    result.priors_df
-    result.phase2_result
-    result.likelihoods_df
     result.posterior_df
-    result.assignment_df
     result.assigned_labels
     result.diagnostics
 
-The result object is the preferred interface because it exposes both raw
-evidence and normalized matrices. ``posterior_df`` is the preferred
-probabilistic output when available. If ``marker_genes`` is provided as a plain
-list, Phase 1 is used as a location mask and ``posterior_df`` is ``None``; use
-``assignment_df`` or ``phase2_result`` for that workflow.
+``posterior_df`` contains relative posterior support among tested marker
+groups, not guaranteed absolute biological cell fractions. ``assigned_labels``
+contains hard assignments and therefore discards uncertainty. Inspect
+``diagnostics`` before relying on assignments downstream.
 
-Legacy Tuple Return
--------------------
+Next steps
+----------
 
-Without ``return_result_object=True``, ``run_easydecon`` keeps the historical
-five-value tuple return::
+* :doc:`marker_inputs` explains marker tables, generated markers, and
+  ``PreparedMarkers``.
+* :doc:`workflow` explains the full Phase 1 -> Phase 2 -> posterior flow.
+* :doc:`results` explains which matrix to use for each downstream task.
+* :doc:`visualization` gives Matplotlib recipes for maps and summaries.
+
+Compatibility tuple return
+--------------------------
+
+Without ``return_result_object=True``, ``run_easydecon`` returns the historical
+five-value tuple::
 
     phase1_result, phase2_result, assigned_labels, priors_df, assignment_df = ed.run_easydecon(
-        sdata,
+        sdata=sdata,
         markers_df=markers_df,
+        filtering_algorithm="quantile",
+        method="wjaccard",
     )
 
 Set ``return_diagnostics=True`` to append the diagnostics dictionary to that
-tuple.
-
-Marker Sources
---------------
-
-``run_easydecon`` can use an existing marker table, generate Scanpy markers,
-generate pseudobulk PyDESeq2 markers, or reuse prepared markers.
-
-.. code-block:: python
-
-    result = ed.run_easydecon(
-        sdata,
-        adata=sc_adata,
-        groupby="cell_type",
-        marker_method="scanpy",
-        filtering_algorithm="quantile",
-        return_result_object=True,
-        verbose=False,
-    )
-
-    prepared = ed.prepare_markers(
-        sc_adata,
-        marker_method="scanpy",
-        groupby="cell_type",
-    )
-
-    result = ed.run_easydecon(
-        sdata,
-        prepared_markers=prepared,
-        return_result_object=True,
-    )
-
-Use ``marker_method="pydeseq2"`` with ``sample_col`` and raw count data for
-pseudobulk marker generation. Use ``marker_method="reference"`` for lightweight
-reference-profile markers.
-
-Runtime Configuration
----------------------
-
-.. code-block:: python
-
-    ed.set_n_jobs(1)        # serial execution
-    ed.set_n_jobs(-1)       # all available CPUs
-    ed.set_batch_size(256)  # joblib batch size
-    ed.set_batch_size("auto")
-
-``set_n_jobs(0)`` is rejected. ``set_batch_size`` accepts a positive integer or
-``"auto"``.
+tuple. New code should prefer ``return_result_object=True`` because it exposes
+``likelihoods_df``, ``posterior_df``, ``assignment_df``, and marker diagnostics
+with stable attribute names.

@@ -1,49 +1,30 @@
-# easydecon documentation
+# Documentation sources
 
-- Getting started: [usage.rst](usage.rst).
-- Understanding results: [results.md](results.md).
-- Visualization recipes: [visualization.md](visualization.md).
-- Refining broad groups into subclusters: [refinement.md](refinement.md).
-- Reference-profile markers: [reference_markers.md](reference_markers.md).
-- UCell-like Phase 2 scoring: [ucell.md](ucell.md).
-- Marker roles and phase-specific routing: [marker_roles.md](marker_roles.md).
-- Optional Phase 2 candidate pruning: [candidate_pruning.md](candidate_pruning.md).
-- Synthetic validation benchmarks: [validation.md](validation.md).
+The published documentation starts at `index.rst`. Keep this file out of the
+Sphinx toctree; it is only a contributor note for people editing the docs.
 
-## Workflow overview
+Narrative pages may be written in Markdown or reStructuredText. API reference
+pages are generated from public docstrings and explicit public objects, so do
+not add private helper dumps to `api.rst`.
 
-```text
-Marker table
-    |
-    v
-Phase 1: marker-expression filtering
-    |
-    v
-Priors
-    |
-    +-------------------+
-                        |
-Spatial expression     |
-    |                   |
-    v                   |
-Phase 2: similarity    |
-    |                   |
-    v                   |
-Likelihoods -----------+
-    |
-    v
-Posterior
-    |
-    v
-Hard assignment
+Install the package and documentation dependencies from the repository root:
+
+```bash
+python -m pip install -e ".[docs]"
 ```
 
-Phase 1 determines which cell types are plausible at each spatial location.
-Phase 2 evaluates marker-profile similarity between the selected markers and
-spatial expression. Priors and likelihoods are combined into posterior
-probabilities. When `prior_weight > 0`, a zero Phase 1 prior normally prevents
-that cell type from receiving posterior probability.
+Build locally:
 
-List-style `marker_genes` workflows are different: Phase 1 is used as a
-location mask and final assignment is made directly from Phase 2, so
-`posterior_df` is `None`.
+```bash
+python -m sphinx -b html docs docs/_build/html
+```
+
+Run the warning-as-error build used for release checks:
+
+```bash
+python -m sphinx -W --keep-going -b html docs docs/_build/html
+```
+
+Do not duplicate the root package README here. The root README should remain a
+concise project overview; detailed explanations belong in the documentation
+pages under `docs/`.

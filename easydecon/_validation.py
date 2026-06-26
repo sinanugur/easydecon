@@ -43,6 +43,7 @@ EVIDENCE_TO_LIKELIHOOD_METHODS = frozenset({"row_normalize", "softmax"})
 ASSIGN_METHODS = frozenset({"max", "zmax", "hybrid"})
 UCELL_MARKER_ROLES = frozenset({"positive", "negative", "presence", "identity"})
 MARKER_ROLE_MODES = frozenset({"shared", "phase_specific"})
+MARKER_ROLE_INFERENCE_MODES = frozenset({"none", "scanpy_signed"})
 
 
 def format_allowed_values(values) -> str:
@@ -118,6 +119,7 @@ __all__ = [
     "ASSIGN_METHODS",
     "UCELL_MARKER_ROLES",
     "MARKER_ROLE_MODES",
+    "MARKER_ROLE_INFERENCE_MODES",
     "format_allowed_values",
     "validate_choice",
     "validate_probability_range",

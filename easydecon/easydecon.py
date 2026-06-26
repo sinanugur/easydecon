@@ -59,6 +59,7 @@ from ._validation import (
     ASSIGN_METHODS,
     FILTERING_ALGORITHMS,
     MARKER_METHODS,
+    MARKER_ROLE_INFERENCE_MODES,
     MARKER_ROLE_MODES,
     PHASE1_OUTPUT_STATS,
     PYDESEQ2_MARKER_METHODS,
@@ -110,75 +111,44 @@ def common_markers_gene_expression_and_filter(
     verbose: bool = True,
     **kwargs
 ) -> pd.DataFrame:
-    """
-    Extended version allowing marker_genes as a list, dict, or DataFrame, with
-    customizable column names for the DataFrame.
+    """Compute Phase 1 marker-expression evidence.
 
-    If marker_genes is:
-      1) list[str]: Single group of markers -> create one column named `common_group_name`.
-      2) dict[str, list[str]]: Multiple groups -> each dict key becomes a column in table.obs.
-      3) pd.DataFrame: Must contain columns for groups and gene names (by default 'group' and 'names'),
-         but these can be overridden by `celltype` and `gene_id_column`.
-
-    Steps (for each group):
-      1) Compute aggregator (sum, mean, median, cs) for all bins over that group's marker genes.
-      2) If filtering_algorithm="permutation", subsample bins (subsample_size) and build a null distribution
-         by randomly picking genes of size=len(marker_genes).
-      3) If filtering_algorithm="quantile", compute threshold from (1 - quantile).
-      4) Apply cutoff to all bins (values below threshold become 0).
-      5) Merge results back into `table.obs` if `add_to_obs=True`.
+    ``marker_genes`` may be a list, a mapping from group to genes, or a marker
+    DataFrame. Expression is aggregated for each marker group and filtered with
+    the selected algorithm.
 
     Parameters
     ----------
-    sdata : object
-        Spatial data container or AnnData object. Expected to have sdata.tables[f"square_{bin_size:03}um"].
-    marker_genes : list, dict, or pd.DataFrame
-        Marker genes to use:
-        - list[str]: Single group of marker genes (assigned to `common_group_name`).
-        - dict[str, list[str]]: Mapping of group names to marker gene lists.
-        - pd.DataFrame: Must have columns for group and gene names (default: 'group' and 'names'), 
-          customizable via `celltype` and `gene_id_column`.
-    common_group_name : str, optional
-        Column name assigned if marker_genes is a list. Default is "MarkerGroup".
-    celltype : str, optional
-        Column name in marker_genes DataFrame for group identifier. Default is "group".
-    gene_id_column : str, optional
-        Column name in marker_genes DataFrame for gene names. Default is "names".
-    exclude_group_names : list[str], optional
-        Names of groups to exclude bins where those groups are nonzero. Default is empty.
-    bin_size : int, optional
-        Spatial bin size in microns (e.g., 8 means "square_008um" table). Default is 8.
-    aggregation_method : str, optional
-        How to aggregate gene expression across marker genes. One of "sum", "mean", "median", or "cs" (composite score). Default is "sum".
-    add_to_obs : bool, optional
-        Whether to add the results into the `obs` of the spatial data table. Default is True.
-    filtering_algorithm : str, optional
-        Method to determine expression cutoff. Options: "permutation" or "quantile". Default is "permutation".
-    num_permutations : int, optional
-        Number of permutations for null distribution (used if filtering_algorithm="permutation"). Default is 5000.
-    alpha : float, optional
-        Significance level (1 - alpha quantile) for thresholding using permutation. Default is 0.01.
-    subsample_size : int, optional
-        Number of bins used in permutation subsampling. Default is 25000.
-    subsample_signal_quantile : float, optional
-        Quantile range for selecting moderate-expression bins before permutation. Default is 0.1.
-    permutation_gene_pool_fraction : float, optional
-        Fraction of most variable genes used as the background gene pool for permutation. Default is 0.3.
-    parametric : bool, optional
-        If True, fit a parametric distribution (Gamma or Exponential) to null scores for thresholding. Otherwise use empirical quantile. Default is True.
-    n_subs : int, optional
-        Number of smaller subsets to split the permutation into. Default is 5.
-    quantile : float, optional
-        Quantile cutoff if filtering_algorithm="quantile". Default is 0.7.
+    sdata
+        SpatialData-like container or AnnData-like table.
+    marker_genes
+        List of genes, mapping from group to genes, or marker DataFrame.
+    common_group_name
+        Group name used when ``marker_genes`` is a list.
+    celltype, gene_id_column
+        Marker DataFrame columns for group and gene names.
+    exclude_group_names
+        Groups whose nonzero rows should be excluded from Phase 1 evidence.
+    bin_size
+        Bin size used when resolving a SpatialData table.
+    aggregation_method
+        One of ``"sum"``, ``"mean"``, ``"median"``, or ``"cs"``.
+    add_to_obs
+        Whether to merge Phase 1 columns into ``table.obs``.
+    filtering_algorithm
+        One of ``"permutation"``, ``"quantile"``, or ``"nb"``.
+    output_stat
+        ``"expression"`` or ``"minus_log10_p"``. The latter is invalid with
+        quantile filtering.
     **kwargs
-        Additional keyword arguments (currently unused but reserved for future extensions).
-
+        Additional method-specific options, including ``nb_global_theta`` for
+        NB filtering.
 
     Returns
     -------
     pd.DataFrame
-        The final DataFrame with aggregated + thresholded expression for each group.
-        Columns = one per group, indexed by bin.
+        Thresholded Phase 1 evidence with spatial locations as rows and marker
+        groups as columns.
     """
     validate_choice(
         filtering_algorithm, FILTERING_ALGORITHMS, "filtering_algorithm"
@@ -530,8 +500,7 @@ def get_clusters_by_similarity_on_tissue(
     _candidate_mask=None,
     **kwargs,
 ):
-    """
-    Compute cluster assignments based on a chosen similarity method.
+    """Compute Phase 2 marker-profile evidence with a chosen method.
 
     Parameters
     ----------
@@ -560,13 +529,13 @@ def get_clusters_by_similarity_on_tissue(
         Column in `markers_df` used to measure similarity or weight. 
         Default is "logfoldchanges".
     method : str, optional
-        Method to use for computing similarity. Supported methods include:
-        "correlation", "cosine", "jaccard", "overlap", "wjaccard",
-        "diagnostic", "sum", "mean", "median".
-        Default is "wjaccard".
+        One of ``"correlation"``, ``"cosine"``, ``"jaccard"``,
+        ``"overlap"``, ``"wjaccard"``, ``"diagnostic"``, ``"sum"``,
+        ``"mean"``, ``"median"``, ``"euclidean"``, ``"auc"``, or
+        ``"ucell"``. Default is ``"wjaccard"``.
     add_to_obs : bool, optional
         If True, adds the resulting assignment columns to `table.obs`. 
-        Default is True.
+        Default is False.
     **method_kwargs : 
         Additional, method-specific parameters. For example:
         - For method="wjaccard": supply ``lambda_param``, etc.
@@ -1189,130 +1158,59 @@ def read_markers_dataframe(sdata,
                            reference_presence_min_detection_delta: float = 0.0,
                            reference_negative_min_log2fc: float = 1.0,
                            reference_negative_min_detection: float = 0.10,
-                           reference_negative_min_detection_delta: float = 0.05):
-    """
-    Reads and processes marker genes data for spatial transcriptomics analysis.
+                           reference_negative_min_detection_delta: float = 0.05,
+                           marker_role_inference: str = "none"):
+    """Resolve, standardize, and filter a marker table.
 
-    This function can read marker genes from a DataFrame, file, or an existing
-    ``rank_genes_groups`` result and returns canonical marker columns.
+    Input priority is ``prepared_markers``, then ``markers_df``, then
+    ``filename``, then ``adata``. The returned DataFrame uses canonical marker
+    columns such as ``group`` and ``names`` and is filtered to the spatial gene
+    universe.
 
-    Parameters:
-    -----------
-    sdata : SpatialData object
-        The spatial data object containing the spatial transcriptomics data.
-    filename : path-like, optional
-        Path to the input file containing marker genes data (CSV or Excel format).
-        Required if `adata` is not provided.
-    adata : AnnData object, optional
-        AnnData object containing the marker genes data.
-        Required if `filename` is not provided.
-    exclude_celltype : list, optional
-        List of cell types to exclude from the analysis.
-        Default: []
-    bin_size : int, optional
-        Size of the spatial bin in micrometers.
-        Default: 8
-    top_n_genes : int, optional
-        Number of top genes to keep per cell type.
-        Default: 60
-    sort_by_column : str, optional
-        Column name to sort the genes by.
-        Default: "scores"
-    ascending : bool, optional
-        Whether to sort in ascending order.
-        Default: False
-    gene_id_column : str, optional
-        Column name containing gene IDs.
-        Default: "names"
-    celltype : str, optional
-        Column name containing cell type information.
-        Default: "group"
-    key : str, optional
-        Key in adata.uns where marker genes are stored.
-        Default: "rank_genes_groups"
-    log2fc_min : float, optional
-        Minimum log2 fold change threshold for gene selection.
-        Default: 0.25
-    pval_cutoff : float, optional
-        Maximum adjusted p-value threshold for gene selection.
-        Default: 0.05
-    drop_ribosomal : bool, optional
-        Whether to remove ribosomal genes before final selection.
-        Removes genes starting with RPS or RPL (case-insensitive).
-        Default: False
-    drop_mitochondrial : bool, optional
-        Whether to remove mitochondrial genes before final selection.
-        Removes genes starting with MT- or mt-.
-        Default: False
-    markers_df : pandas.DataFrame, optional
-        Marker DataFrame to process directly. Takes priority over ``filename``
-        and ``adata``.
-    prepared_markers : easydecon.markers.PreparedMarkers, optional
-        Reusable marker preparation. Takes priority over ``markers_df``,
-        ``filename``, and ``adata``.
-    table_key : str, optional
-        Explicit key of the spatial table in ``sdata.tables``.
-    preferred_table_keys : sequence of str, optional
-        Additional spatial table keys to try before the standard keys.
-    source : str, optional
-        Source label to attach to the returned markers.
-    return_diagnostics : bool, optional
-        If True, return ``(df, diagnostics)``.
-    verbose : bool, optional
-        If True, print the detected cell types.
-    marker_method : {"auto", "existing", "scanpy", "pydeseq2", "deseq2", "pseudobulk_deseq2"}, optional
-        How to obtain markers from ``adata``. PyDESeq2 modes always generate
-        one-vs-rest pseudobulk markers, even when ``key`` already exists.
-    groupby : str, optional
-        Column in ``adata.obs`` used to generate Scanpy markers.
-    scanpy_method : str, optional
-        Differential-expression method passed to Scanpy.
-    layer : str, optional
-        AnnData layer passed to Scanpy.
-    use_raw : bool, optional
-        Whether Scanpy should use ``adata.raw``.
-    reference : str, optional
-        Reference group passed to Scanpy.
-    copy_adata : bool, optional
-        Generate markers on a copy rather than mutating the input AnnData.
-    rank_genes_groups_kwargs : dict, optional
-        Additional keyword arguments passed to ``sc.tl.rank_genes_groups``.
-    sample_col : str, optional
-        Biological-sample column used for pseudobulk replication.
-    min_cells_per_group : int, optional
-        Minimum cells contributing to each pseudobulk sample-condition row.
-    min_replicates_per_condition : int, optional
-        Minimum retained pseudobulk replicates for both target and rest.
-    deseq_alpha : float, optional
-        Significance level passed to ``DeseqStats``.
-    deseq_n_cpus : int, optional
-        CPU count passed to PyDESeq2 when supported.
-    deseq_quiet : bool, optional
-        Suppress PyDESeq2 progress output when supported.
-    deseq_kwargs : dict, optional
-        Additional arguments passed to ``DeseqDataSet``.
-    deseq_stats_kwargs : dict, optional
-        Additional arguments passed to ``DeseqStats``.
+    Parameters
+    ----------
+    sdata
+        SpatialData-like container or AnnData-like spatial table.
+    filename
+        CSV or Excel marker file.
+    adata
+        AnnData reference used for existing Scanpy markers, generated Scanpy
+        markers, pseudobulk PyDESeq2 markers, or reference-profile markers.
+    markers_df
+        Marker DataFrame to process directly.
+    prepared_markers
+        Reusable marker preparation. Takes priority over all other marker
+        sources.
+    marker_method
+        One of ``"auto"``, ``"existing"``, ``"scanpy"``, ``"pydeseq2"``,
+        ``"deseq2"``, ``"pseudobulk_deseq2"``, ``"reference"``, or
+        ``"rctd_like"``.
+    marker_roles
+        ``"shared"`` or ``"phase_specific"``.
+    marker_role_inference
+        ``"none"`` or ``"scanpy_signed"``.
+    return_diagnostics
+        If True, return ``(markers_df, diagnostics)``.
 
-    Returns:
-    --------
+    Returns
+    -------
     pandas.DataFrame
-        Processed DataFrame containing filtered and sorted marker genes data.
-        The DataFrame includes columns for cell types, gene IDs, and scores.
+        Standardized marker table, or ``(markers_df, diagnostics)`` when
+        ``return_diagnostics=True``.
 
-    Raises:
+    Raises
     ------
     ValueError
-        If no marker input is provided or an input cannot be read.
-
-    Notes:
-    -----
-    - The function automatically handles both CSV and Excel file formats.
-    - Genes are filtered based on log2 fold change and adjusted p-value thresholds.
-    - The resulting DataFrame is sorted by the specified column and limited to the top N genes per cell type.
+        If no marker input is provided, if a source cannot be read, or if role
+        settings are incompatible with the selected marker method.
     """
     validate_choice(marker_method, MARKER_METHODS, "marker_method")
     validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
+    validate_choice(
+        marker_role_inference,
+        MARKER_ROLE_INFERENCE_MODES,
+        "marker_role_inference",
+    )
 
     generated_rank_genes_groups = False
     generated_pseudobulk_deseq = False
@@ -1322,6 +1220,13 @@ def read_markers_dataframe(sdata,
     marker_signature = None
     deseq_diagnostics = None
     reference_diagnostics = None
+    role_inference_diagnostics = {
+        "mode": marker_role_inference,
+        "requested": marker_role_inference != "none",
+        "applied": False,
+        "existing_roles_preserved": False,
+        "input_source": None,
+    }
     table = get_table(
         sdata,
         bin_size=bin_size,
@@ -1334,6 +1239,12 @@ def read_markers_dataframe(sdata,
 
         if not isinstance(prepared_markers, PreparedMarkers):
             raise TypeError("prepared_markers must be a PreparedMarkers object.")
+        prepared_has_roles = "marker_role" in prepared_markers.raw_markers_df.columns
+        if marker_role_inference == "scanpy_signed" and not prepared_has_roles:
+            raise ValueError(
+                "PreparedMarkers does not contain inferred marker roles. "
+                "Recreate it with marker_role_inference='scanpy_signed'."
+            )
         resolved_source = source if source is not None else prepared_markers.source
         df = select_prepared_markers(
             prepared_markers,
@@ -1350,6 +1261,14 @@ def read_markers_dataframe(sdata,
         )
         prepared_markers_used = True
         marker_signature = prepared_markers.signature
+        if marker_role_inference == "scanpy_signed" and prepared_has_roles:
+            role_inference_diagnostics = {
+                "mode": "scanpy_signed",
+                "requested": True,
+                "applied": False,
+                "existing_roles_preserved": True,
+                "input_source": resolved_source,
+            }
     elif markers_df is not None:
         raw_df = markers_df
         resolved_source = source if source is not None else "dataframe"
@@ -1366,6 +1285,12 @@ def read_markers_dataframe(sdata,
         resolved_source = source if source is not None else "file"
     elif adata is not None:
         if marker_method in REFERENCE_MARKER_METHODS:
+            if marker_role_inference == "scanpy_signed":
+                raise ValueError(
+                    "marker_role_inference='scanpy_signed' is intended for Scanpy-style "
+                    "signed marker results. It is not applied to reference-profile or "
+                    "PyDESeq2 marker generation."
+                )
             from .markers import compute_reference_profile_markers
 
             raw_df, reference_diagnostics = compute_reference_profile_markers(
@@ -1392,6 +1317,12 @@ def read_markers_dataframe(sdata,
             generated_reference_profile = True
             resolved_source = source if source is not None else "reference_profile"
         elif marker_method in PYDESEQ2_MARKER_METHODS:
+            if marker_role_inference == "scanpy_signed":
+                raise ValueError(
+                    "marker_role_inference='scanpy_signed' is intended for Scanpy-style "
+                    "signed marker results. It is not applied to reference-profile or "
+                    "PyDESeq2 marker generation."
+                )
             if marker_roles == "phase_specific":
                 raise ValueError(
                     "Automatic phase-specific role generation is currently supported only for "
@@ -1416,7 +1347,7 @@ def read_markers_dataframe(sdata,
                 source if source is not None else "pydeseq2_pseudobulk"
             )
         else:
-            if marker_roles == "phase_specific":
+            if marker_roles == "phase_specific" and marker_role_inference != "scanpy_signed":
                 raise ValueError(
                     "Automatic phase-specific role generation is currently supported only for "
                     "marker_method='reference'. Provide a marker table with marker_role for "
@@ -1475,6 +1406,32 @@ def read_markers_dataframe(sdata,
             padj_col="pvals_adj",
             score_col="scores",
         )
+
+        if marker_role_inference == "scanpy_signed":
+            from .markers import infer_scanpy_signed_marker_roles
+
+            raw_df, role_inference_diagnostics = infer_scanpy_signed_marker_roles(
+                raw_df,
+                schema=schema,
+                log2fc_min=log2fc_min,
+            )
+            role_inference_diagnostics = {
+                **role_inference_diagnostics,
+                "requested": True,
+                "applied": role_inference_diagnostics.get(
+                    "inference_applied", False
+                ),
+                "input_source": resolved_source,
+            }
+            if (
+                role_inference_diagnostics.get("inference_applied")
+                and marker_roles == "phase_specific"
+            ):
+                raise ValueError(
+                    "Signed Scanpy role inference creates positive and negative roles only. "
+                    "Use marker_roles='shared', provide a manually annotated marker table "
+                    "with presence/identity roles, or use marker_method='reference'."
+                )
 
         # ``scores`` is the historical default, but not every valid marker format
         # provides a score. In that case use the standard metric preference.
@@ -1549,6 +1506,10 @@ def read_markers_dataframe(sdata,
             "marker_generation_reused": (
                 True if prepared_markers_used else used_existing_rank_genes_groups
             ),
+            "marker_role_inference": role_inference_diagnostics,
+            "top_n_applied_by": (
+                "read_markers_dataframe" if top_n_genes is not None else None
+            ),
         }
         if "marker_role" in df.columns:
             diagnostics["marker_roles"] = marker_roles
@@ -1575,61 +1536,37 @@ def assign_clusters_from_df(
     add_to_obs=True,
     verbose=True,
 ):
-    """
-    Assigns cell clusters to spatial spots based on deconvolution results.
+    """Convert a score matrix into hard assignments.
 
-    This function takes deconvolution results and assigns cell type clusters to each spatial spot
-    using different methods (max, zmax, or hybrid). The results are stored in the spatial data table.
+    Parameters
+    ----------
+    sdata
+        SpatialData-like container or AnnData-like table.
+    df
+        Score matrix with spatial locations as rows and marker groups as
+        columns.
+    bin_size
+        Bin size used when resolving a SpatialData table.
+    results_column
+        Column name for the primary assignment.
+    method
+        One of ``"max"``, ``"zmax"``, or ``"hybrid"``.
+    allow_multiple
+        Multiple assignments are supported only with ``method="hybrid"``.
+    fold_change_threshold
+        Hybrid assignment threshold comparing top and second adaptive
+        probabilities.
+    minimum_evidence
+        Minimum score required before a row can receive a hard assignment.
+    tie_tolerance
+        Tolerance used to leave near-tied winners unassigned.
+    add_to_obs
+        If True, merge assignment columns into ``table.obs``.
 
-    Parameters:
-    -----------
-    sdata : SpatialData object
-        The spatial data object containing the spatial transcriptomics data.
-    df : pandas.DataFrame
-        DataFrame containing deconvolution results with cell type proportions.
-        Rows should correspond to spatial spots, columns to cell types.
-    bin_size : int, optional
-        Size of the spatial bin in micrometers.
-        Default: 8
-    results_column : str, optional
-        Name of the column in the table.obs where results will be stored.
-        Default: "easydecon"
-    method : str, optional
-        Method to use for cluster assignment:
-        - "max": Assigns the cell type with the highest proportion
-        - "zmax": Uses z-score normalization before finding the maximum
-        - "hybrid": Combines similarity scores and adaptive probabilities
-        Default: "max"
-    allow_multiple : bool, optional
-        Whether to allow multiple cell type assignments per spot.
-        Default: False
-    diagnostic : str, optional
-        Path to save diagnostic information (if needed).
-        Default: None
-    fold_change_threshold : float, optional
-        Threshold for fold change filtering.
-        Default: 2.0
-    verbose : bool, optional
-        Whether to print assignment progress messages.
-        Default: True
-
-    Returns:
-    --------
-    None
-        The function modifies the input sdata object in place by adding cluster assignments
-        to the table.obs DataFrame under the specified results_column.
-
-    Raises:
-    ------
-    ValueError
-        If an invalid method is specified.
-
-    Notes:
-    -----
-    - The function automatically handles missing values and ensures proper indexing.
-    - Results are stored as categorical variables in the table.obs DataFrame.
-    - The function supports three different methods for cluster assignment, each with its own
-      characteristics and use cases.
+    Returns
+    -------
+    pandas.DataFrame
+        Assignment labels aligned to ``table.obs.index``.
     """
 
     validate_choice(method, ASSIGN_METHODS, "method")

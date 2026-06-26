@@ -20,11 +20,13 @@ import scanpy as sc
 from scipy.sparse import csr_matrix, diags, issparse
 
 from ._schema import (
+    MarkerSchema,
     normalize_marker_roles,
     resolve_marker_columns,
     standardize_marker_dataframe,
 )
 from ._validation import (
+    MARKER_ROLE_INFERENCE_MODES,
     MARKER_ROLE_MODES,
     MARKER_METHODS,
     PYDESEQ2_MARKER_METHODS,
@@ -122,6 +124,139 @@ def _validate_bool(value, name):
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be a bool.")
     return value
+
+
+def infer_scanpy_signed_marker_roles(
+    markers_df,
+    *,
+    schema=None,
+    log2fc_min=0.25,
+) -> tuple[pd.DataFrame, dict]:
+    """Infer positive/negative roles from signed Scanpy-style marker rows."""
+    if not isinstance(markers_df, pd.DataFrame):
+        raise TypeError("markers_df must be a pandas DataFrame.")
+    log2fc_min = _validate_reference_float_nonnegative(log2fc_min, "log2fc_min")
+    work = markers_df.copy()
+    roles, role_column = normalize_marker_roles(work)
+    if roles is not None:
+        if role_column != "marker_role":
+            work = work.rename(columns={role_column: "marker_role"})
+        work["marker_role"] = roles
+        resolved = resolve_marker_columns(work, schema=schema or MarkerSchema())
+        group_column = resolved.get("group", "group")
+        diagnostics = {
+            "mode": "scanpy_signed",
+            "inference_applied": False,
+            "existing_roles_preserved": True,
+            "n_input_rows": int(markers_df.shape[0]),
+            "n_output_rows": int(work.shape[0]),
+            "n_positive_inferred": 0,
+            "n_negative_inferred": 0,
+            "n_ambiguous_dropped": 0,
+            "n_nonfinite_logfoldchange": 0,
+            "n_below_effect_threshold": 0,
+            "n_score_sign_discordant": 0,
+            "n_zero_score": 0,
+            "groups_with_positive": (
+                work.loc[
+                    work["marker_role"].isin(["positive", "presence", "identity"]),
+                    group_column,
+                ]
+                .drop_duplicates()
+                .astype(str)
+                .tolist()
+                if group_column in work
+                else []
+            ),
+            "groups_with_negative": (
+                work.loc[work["marker_role"] == "negative", group_column]
+                .drop_duplicates()
+                .astype(str)
+                .tolist()
+                if group_column in work
+                else []
+            ),
+            "groups_without_positive": [],
+            "groups_without_negative": [],
+            "log2fc_min": float(log2fc_min),
+        }
+        return work, diagnostics
+
+    schema = schema or MarkerSchema()
+    resolved = resolve_marker_columns(work, schema=schema)
+    if "logfoldchanges" not in resolved:
+        raise ValueError(
+            "marker_role_inference='scanpy_signed' requires a signed "
+            "logfoldchanges column. Roles are not inferred from scores alone."
+        )
+    missing = {"group", "names"}.difference(resolved)
+    if missing:
+        raise ValueError(
+            "marker_role_inference='scanpy_signed' requires resolvable group "
+            f"and gene columns. Missing: {sorted(missing)}."
+        )
+
+    lfc = pd.to_numeric(work[resolved["logfoldchanges"]], errors="coerce")
+    finite_lfc = np.isfinite(lfc)
+    positive = finite_lfc & (lfc > 0) & (lfc >= log2fc_min)
+    negative = finite_lfc & (lfc < 0) & (lfc <= -log2fc_min)
+    directional = positive | negative
+
+    score_discordant = pd.Series(False, index=work.index)
+    zero_score = pd.Series(False, index=work.index)
+    if "scores" in resolved:
+        score = pd.to_numeric(work[resolved["scores"]], errors="coerce")
+        finite_score = np.isfinite(score)
+        zero_score = finite_score & (score == 0)
+        score_discordant = finite_score & (
+            (positive & (score < 0)) | (negative & (score > 0))
+        )
+    keep = directional & ~score_discordant & ~zero_score
+    retained = work.loc[keep].copy()
+    retained["marker_role"] = np.where(positive.loc[keep], "positive", "negative")
+
+    groups = work[resolved["group"]].dropna().astype(str).drop_duplicates().tolist()
+    positive_groups = retained.loc[retained["marker_role"] == "positive", resolved["group"]].astype(str).drop_duplicates().tolist()
+    negative_groups = retained.loc[retained["marker_role"] == "negative", resolved["group"]].astype(str).drop_duplicates().tolist()
+    diagnostics = {
+        "mode": "scanpy_signed",
+        "inference_applied": True,
+        "existing_roles_preserved": False,
+        "n_input_rows": int(work.shape[0]),
+        "n_output_rows": int(retained.shape[0]),
+        "n_positive_inferred": int((retained["marker_role"] == "positive").sum()) if "marker_role" in retained else 0,
+        "n_negative_inferred": int((retained["marker_role"] == "negative").sum()) if "marker_role" in retained else 0,
+        "n_ambiguous_dropped": int((~keep).sum()),
+        "n_nonfinite_logfoldchange": int((~finite_lfc).sum()),
+        "n_below_effect_threshold": int((finite_lfc & ~directional).sum()),
+        "n_score_sign_discordant": int(score_discordant.sum()),
+        "n_zero_score": int(zero_score.sum()),
+        "groups_with_positive": positive_groups,
+        "groups_with_negative": negative_groups,
+        "groups_without_positive": [group for group in groups if group not in set(positive_groups)],
+        "groups_without_negative": [group for group in groups if group not in set(negative_groups)],
+        "log2fc_min": float(log2fc_min),
+    }
+    return retained, diagnostics
+
+
+def _validate_marker_role_inference_for_method(marker_role_inference, marker_method):
+    validate_choice(
+        marker_role_inference,
+        MARKER_ROLE_INFERENCE_MODES,
+        "marker_role_inference",
+    )
+    normalized_method = _normalize_marker_method(marker_method)
+    if (
+        marker_role_inference == "scanpy_signed"
+        and normalized_method in REFERENCE_MARKER_METHODS | PYDESEQ2_MARKER_METHODS
+    ):
+        raise ValueError(
+            "marker_role_inference='scanpy_signed' is intended for Scanpy-style "
+            "signed marker results. It is not applied to reference-profile or "
+            "PyDESeq2 marker generation."
+        )
+    return marker_role_inference
 
 
 def _get_reference_expression_matrix(adata, layer):
@@ -738,12 +873,20 @@ def prepare_markers(
     reference_negative_min_log2fc: float = 1.0,
     reference_negative_min_detection: float = 0.10,
     reference_negative_min_detection_delta: float = 0.05,
+    marker_role_inference: str = "none",
     verbose=True,
 ) -> PreparedMarkers:
     """Generate or extract reusable, spatial-unfiltered marker tables."""
     normalized_method = _normalize_marker_method(marker_method)
     validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
-    if marker_roles == "phase_specific" and normalized_method not in REFERENCE_MARKER_METHODS:
+    _validate_marker_role_inference_for_method(
+        marker_role_inference, normalized_method
+    )
+    if (
+        marker_roles == "phase_specific"
+        and normalized_method not in REFERENCE_MARKER_METHODS
+        and marker_role_inference != "scanpy_signed"
+    ):
         raise ValueError(
             "Automatic phase-specific role generation is currently supported only for "
             "marker_method='reference'. Provide a marker table with marker_role for "
@@ -779,6 +922,7 @@ def prepare_markers(
         "reference_negative_min_log2fc": reference_negative_min_log2fc,
         "reference_negative_min_detection": reference_negative_min_detection,
         "reference_negative_min_detection_delta": reference_negative_min_detection_delta,
+        "marker_role_inference": marker_role_inference,
         "verbose": verbose,
     }
     normalized_parameters = _normalize_marker_parameters(parameters)
@@ -788,6 +932,13 @@ def prepare_markers(
         "generated_rank_genes_groups": False,
         "generated_pseudobulk_deseq": False,
         "generated_reference_profile": False,
+        "marker_role_inference": {
+            "mode": marker_role_inference,
+            "requested": marker_role_inference != "none",
+            "applied": False,
+            "existing_roles_preserved": False,
+            "input_source": None,
+        },
     }
 
     if normalized_method in REFERENCE_MARKER_METHODS:
@@ -872,6 +1023,28 @@ def prepare_markers(
                 "Run sc.tl.rank_genes_groups first or provide markers_df/filename."
             ) from exc
 
+    role_inference_diagnostics = None
+    if marker_role_inference == "scanpy_signed":
+        raw_df, role_inference_diagnostics = infer_scanpy_signed_marker_roles(
+            raw_df,
+            log2fc_min=reference_min_log2fc if normalized_method in REFERENCE_MARKER_METHODS else 0.25,
+        )
+        diagnostics["marker_role_inference"] = {
+            **role_inference_diagnostics,
+            "requested": True,
+            "applied": role_inference_diagnostics.get("inference_applied", False),
+            "input_source": source,
+        }
+        if (
+            role_inference_diagnostics.get("inference_applied")
+            and marker_roles == "phase_specific"
+        ):
+            raise ValueError(
+                "Signed Scanpy role inference creates positive and negative roles only. "
+                "Use marker_roles='shared', provide a manually annotated marker table "
+                "with presence/identity roles, or use marker_method='reference'."
+            )
+
     standardized = standardize_marker_dataframe(
         raw_df,
         gene_universe=None,
@@ -898,6 +1071,10 @@ def prepare_markers(
             "signature": signature,
         }
     )
+    if "marker_role" in standardized.columns:
+        diagnostics["marker_role_counts"] = (
+            standardized["marker_role"].value_counts().astype(int).to_dict()
+        )
     if verbose:
         print(f"Prepared markers from {source}.")
 
@@ -949,15 +1126,42 @@ def select_prepared_markers(
     )
 
 
+def _top_n_per_group(df, top_n_genes):
+    if top_n_genes is None:
+        return df.copy()
+    top_n_genes = _validate_optional_top_n(top_n_genes)
+    work = df.copy()
+    pieces = []
+    for _, group_df in work.groupby(work["group"], sort=False, group_keys=False):
+        group_df = group_df.copy()
+        if "marker_rank" in group_df.columns:
+            group_df = group_df.sort_values("marker_rank", ascending=True, kind="stable")
+        pieces.append(group_df.head(top_n_genes))
+    work = pd.concat(pieces, ignore_index=False) if pieces else work.iloc[0:0].copy()
+    work["marker_rank"] = work.groupby(work["group"], sort=False).cumcount() + 1
+    return work
+
+
 def _top_n_per_role(df, top_n_genes):
     if top_n_genes is None:
-        return df
+        return df.copy()
     top_n_genes = _validate_optional_top_n(top_n_genes)
-    if "marker_role" in df.columns:
-        return df.groupby(
-            [df["group"], df["marker_role"]], sort=False, group_keys=False
-        ).head(top_n_genes)
-    return df.groupby(df["group"], sort=False, group_keys=False).head(top_n_genes)
+    if "marker_role" not in df.columns:
+        return _top_n_per_group(df, top_n_genes)
+    work = df.copy()
+    pieces = []
+    for _, group_df in work.groupby(
+        [work["group"], work["marker_role"]], sort=False, group_keys=False
+    ):
+        group_df = group_df.copy()
+        if "marker_rank" in group_df.columns:
+            group_df = group_df.sort_values("marker_rank", ascending=True, kind="stable")
+        pieces.append(group_df.head(top_n_genes))
+    work = pd.concat(pieces, ignore_index=False) if pieces else work.iloc[0:0].copy()
+    work["marker_rank"] = (
+        work.groupby([work["group"], work["marker_role"]], sort=False).cumcount() + 1
+    )
+    return work
 
 
 def _marker_counts_by_group(df):
@@ -1000,8 +1204,8 @@ def resolve_phase_marker_tables(
         work["marker_role"] = roles
 
     if marker_roles == "shared" and not has_roles:
-        phase1 = work.copy()
-        phase2 = work.copy()
+        phase1 = _top_n_per_group(work, top_n_genes)
+        phase2 = _top_n_per_group(work, top_n_genes)
         diagnostics = {
             "mode": marker_roles,
             "role_column": marker_role_column,
@@ -1088,6 +1292,7 @@ def resolve_phase_marker_tables(
 __all__ = [
     "PreparedMarkers",
     "compute_reference_profile_markers",
+    "infer_scanpy_signed_marker_roles",
     "prepare_markers",
     "select_prepared_markers",
     "resolve_phase_marker_tables",

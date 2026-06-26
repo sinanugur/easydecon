@@ -224,6 +224,22 @@ def summarize_easydecon_result(
         markers_summary["marker_source"] = marker_diagnostics["source"]
     if marker_diagnostics.get("reference_contrast") is not None:
         markers_summary["reference_contrast"] = marker_diagnostics["reference_contrast"]
+    inference = marker_diagnostics.get("marker_role_inference")
+    if isinstance(inference, dict) and (
+        inference.get("requested") or inference.get("applied")
+    ):
+        markers_summary["marker_role_inference"] = {
+            key: inference.get(key)
+            for key in (
+                "mode",
+                "applied",
+                "n_positive_inferred",
+                "n_negative_inferred",
+                "n_ambiguous_dropped",
+                "n_score_sign_discordant",
+            )
+            if inference.get(key) is not None
+        }
 
     posterior_df = getattr(result, "posterior_df", None)
     workflow_summary = {

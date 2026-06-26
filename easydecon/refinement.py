@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from ._schema import get_table
-from ._validation import validate_choice
+from ._validation import MARKER_ROLE_INFERENCE_MODES, validate_choice
 from .easydecon import (
     _validate_finite_nonnegative,
     assign_clusters_from_df,
@@ -118,6 +118,7 @@ def _read_marker_kwargs(workflow_kwargs):
         "reference_pseudocount": "reference_pseudocount",
         "reference_contrast": "reference_contrast",
         "marker_roles": "marker_roles",
+        "marker_role_inference": "marker_role_inference",
         "reference_presence_min_log2fc": "reference_presence_min_log2fc",
         "reference_presence_min_detection_delta": "reference_presence_min_detection_delta",
         "reference_negative_min_log2fc": "reference_negative_min_log2fc",
@@ -182,6 +183,7 @@ def refine_group(
     tie_tolerance=1e-12,
     phase2_candidate_pruning: bool = False,
     phase2_candidate_threshold: float = 0.0,
+    marker_role_inference: str = "none",
     verbose=True,
     **workflow_kwargs,
 ) -> RefinedGroupResult:
@@ -189,6 +191,11 @@ def refine_group(
     validate_choice(mode, REFINEMENT_MODES, "mode")
     validate_choice(parent_source, PARENT_SOURCES, "parent_source")
     validate_choice(evidence_to_likelihood, {"row_normalize", "softmax"}, "evidence_to_likelihood")
+    validate_choice(
+        marker_role_inference,
+        MARKER_ROLE_INFERENCE_MODES,
+        "marker_role_inference",
+    )
     if parent_threshold < 0:
         raise ValueError("parent_threshold must be non-negative.")
     _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
@@ -207,6 +214,7 @@ def refine_group(
         )
     _pop_blocked_workflow_kwargs(workflow_kwargs)
     workflow_kwargs.setdefault("marker_roles", marker_roles)
+    workflow_kwargs.setdefault("marker_role_inference", marker_role_inference)
     workflow_kwargs.setdefault(
         "reference_presence_min_log2fc", reference_presence_min_log2fc
     )
@@ -281,8 +289,8 @@ def refine_group(
     else:
         child_result = None
         read_kwargs = _read_marker_kwargs(workflow_kwargs)
-        if read_kwargs.get("marker_roles") == "phase_specific":
-            read_kwargs["top_n_genes"] = None
+        requested_top_n = workflow_kwargs.get("top_n_genes", 60)
+        read_kwargs["top_n_genes"] = None
         child_markers, marker_diagnostics = read_markers_dataframe(
             child_table,
             markers_df=markers_df,
@@ -302,9 +310,7 @@ def refine_group(
                 "ucell_marker_role_column", "marker_role"
             ),
             top_n_genes=(
-                workflow_kwargs.get("top_n_genes")
-                if workflow_kwargs.get("marker_roles", "shared") == "phase_specific"
-                else None
+                requested_top_n
             ),
             require_phase1=False,
         )

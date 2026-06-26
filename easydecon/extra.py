@@ -6,6 +6,7 @@ import pandas as pd
 from ._schema import get_table
 from ._validation import (
     EVIDENCE_TO_LIKELIHOOD_METHODS,
+    MARKER_ROLE_INFERENCE_MODES,
     MARKER_ROLE_MODES,
     validate_choice,
     validate_positive,
@@ -239,6 +240,7 @@ def easydecon_workflow(
     reference_negative_min_log2fc: float = 1.0,
     reference_negative_min_detection: float = 0.10,
     reference_negative_min_detection_delta: float = 0.05,
+    marker_role_inference: str = "none",
     verbose: bool = True,
     return_result_object: bool = False,
     return_diagnostics: bool = False,
@@ -304,6 +306,11 @@ def easydecon_workflow(
     _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
     _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
     validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
+    validate_choice(
+        marker_role_inference,
+        MARKER_ROLE_INFERENCE_MODES,
+        "marker_role_inference",
+    )
     _validate_finite_nonnegative(reference_min_log2fc, "reference_min_log2fc")
     _validate_finite_nonnegative(
         reference_presence_min_log2fc, "reference_presence_min_log2fc"
@@ -365,7 +372,7 @@ def easydecon_workflow(
         prepared_markers=prepared_markers,
         exclude_celltype=None,
         bin_size=bin_size,
-        top_n_genes=None if marker_roles == "phase_specific" else top_n_genes,
+        top_n_genes=None,
         sort_by_column=sort_by_column,
         ascending=ascending,
         gene_id_column=gene_id_column,
@@ -409,6 +416,7 @@ def easydecon_workflow(
         reference_negative_min_log2fc=reference_negative_min_log2fc,
         reference_negative_min_detection=reference_negative_min_detection,
         reference_negative_min_detection_delta=reference_negative_min_detection_delta,
+        marker_role_inference=marker_role_inference,
     )
     if not isinstance(markers_df, pd.DataFrame):
         raise ValueError("Resolved markers_df must be a pandas DataFrame.")
@@ -431,7 +439,7 @@ def easydecon_workflow(
             marker_roles=marker_roles,
             method=method,
             marker_role_column=ucell_marker_role_column,
-            top_n_genes=top_n_genes if marker_roles == "phase_specific" else None,
+            top_n_genes=top_n_genes,
             require_phase1=marker_genes is None,
         )
     )
@@ -692,6 +700,7 @@ def easydecon_workflow(
             "fold_change_threshold": fold_change_threshold,
         },
     }
+    diagnostics["markers"]["top_n_applied_by"] = "workflow_phase_resolver"
     if method == "ucell":
         informative_rows = (phase2_result.max(axis=1) > 0)
         diagnostics["phase2"]["n_informative_rows"] = int(informative_rows.sum())

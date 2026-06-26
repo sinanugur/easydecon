@@ -1,30 +1,34 @@
 # Refining broad groups into subclusters
 
-`ed.refine_group` lets you take a parent result, such as a coarse Myeloid
-assignment, and run a second marker-based analysis only where that parent group
-is supported.
+`ed.refine_group` refines one parent marker group, such as a broad myeloid
+group, into subtype scores only where that parent group is supported.
 
-## Parent analysis
-
-First run a normal easydecon workflow with broad cell types:
+First run a parent workflow:
 
 ```python
 parent = ed.run_easydecon(
     sdata,
     markers_df=broad_markers,
+    filtering_algorithm="quantile",
     return_result_object=True,
+    verbose=False,
 )
 ```
 
-The parent score can come from `parent.priors_df` or `parent.posterior_df`.
-`parent_source="priors"` is useful when you want Phase 1 presence gating.
-`parent_source="posterior"` is stricter because it also includes Phase 2
-similarity support. If `parent.posterior_df` is `None`, use
-`parent_source="priors"`.
+## Parent gate
 
-## Phase-2-only child refinement
+`parent_source="priors"`
+: Use `parent.priors_df[parent_group]` as the gate.
 
-This is the default and fastest mode:
+`parent_source="posterior"`
+: Use `parent.posterior_df[parent_group]` as the gate. This raises if
+  `posterior_df` is `None`.
+
+`parent_threshold` selects eligible spatial locations with
+`parent_scores > parent_threshold`. If none pass, `refine_group` raises a
+clear `ValueError`.
+
+## Fast child refinement: mode="phase2"
 
 ```python
 refined = ed.refine_group(
@@ -38,14 +42,19 @@ refined = ed.refine_group(
 )
 ```
 
-`mode="phase2"` uses the previous Myeloid score as a parent gate and runs only
-subtype marker-profile similarity inside the eligible locations. It does not
-run child Phase 1.
+This mode:
 
-## Full child refinement
+* uses the parent gate;
+* reads/routs child markers;
+* runs child Phase 2 only;
+* maps child Phase 2 evidence to `conditional_df`; and
+* does not run child Phase 1.
 
-Use full refinement when you want subtype-specific Phase 1 priors as well as
-Phase 2 evidence:
+Because it does not calculate child priors, `phase2_candidate_pruning=True` is
+not available in `mode="phase2"`. Use `parent_threshold` to narrow locations or
+switch to `mode="full"`.
+
+## Full child refinement: mode="full"
 
 ```python
 refined = ed.refine_group(
@@ -56,38 +65,53 @@ refined = ed.refine_group(
     mode="full",
     parent_source="priors",
     parent_threshold=0.0,
+    phase2_candidate_pruning=True,
 )
 ```
 
-`mode="full"` subsets to parent-positive locations, then runs
-`run_easydecon(..., return_result_object=True)` on that child table.
+This mode:
 
-## Conditional versus absolute subtype values
+* uses the parent gate;
+* runs a complete child `run_easydecon(..., return_result_object=True)`;
+* calculates child Phase 1 priors;
+* calculates child Phase 2 likelihoods;
+* returns child posterior values in `conditional_df`; and
+* can use child candidate pruning.
 
-`refined.conditional_df` contains relative subtype probabilities within the
-parent group. These rows usually sum to one for eligible locations with subtype
-evidence.
+Full mode rejects list-style child `marker_genes` because it expects a child
+`posterior_df`.
 
-`refined.absolute_df` multiplies each conditional subtype value by the parent
-score:
+## Result fields
 
-```python
-refined.absolute_df = refined.conditional_df * refined.parent_scores
+`RefinedGroupResult` contains:
+
+`parent_scores`
+: Parent prior or posterior scores aligned to the full spatial table.
+
+`eligible_mask`
+: Boolean mask of locations passing the parent threshold.
+
+`conditional_df`
+: Relative subtype support within eligible parent-positive locations.
+
+`absolute_df`
+: Conditional subtype values scaled by parent support.
+
+```text
+absolute_df = conditional_df * parent_scores
 ```
 
-When conditional subtype probabilities sum to one, absolute subtype values sum
-to the parent score. Locations outside the parent gate remain zero and are left
-unassigned in `refined.assigned_labels`.
+`assigned_labels`
+: Hard subtype labels assigned from `absolute_df`.
 
-## Choosing priors versus posterior as the parent source
+`phase2_result`
+: Child Phase 2 evidence aligned to the full spatial table.
 
-- `parent_source="priors"`: use the Phase 1 parent presence map as the gate.
-- `parent_source="posterior"`: use the combined parent posterior as the gate.
+`child_result`
+: Full child `EasyDeconResult` in `mode="full"`, otherwise `None`.
 
-Use a positive `parent_threshold` to restrict refinement to locations with
-stronger parent support. If no locations pass the threshold, `refine_group`
-raises a clear `ValueError`.
+`diagnostics`
+: Parent gate, marker, role-routing, Phase 2, and assignment metadata.
 
-This helper does not recursively refine multiple hierarchy levels
-automatically, infer parent-child marker relationships, or cache results on
+The helper does not infer a recursive hierarchy or cache multi-level results on
 disk.

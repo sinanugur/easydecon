@@ -1,68 +1,74 @@
 # Understanding EasyDeconResult
 
-`EasyDeconResult` is returned when you call `ed.run_easydecon(...,
-return_result_object=True)`.
+`EasyDeconResult` is returned by:
+
+```python
+result = ed.run_easydecon(..., return_result_object=True)
+```
 
 | Field | Shape/type | Meaning | Typical use |
 | --- | --- | --- | --- |
-| `markers_df` | marker rows × metadata columns | Spatial-compatible selected markers | Marker QC |
-| `phase1_result` | locations × cell types | Thresholded Phase 1 marker-expression evidence | Presence detection |
-| `priors_df` | locations × cell types | Row-normalized Phase 1 values | Prior gating and hierarchical analyses |
-| `phase2_result` | locations × cell types | Raw marker-profile similarity | Similarity inspection |
-| `likelihoods_df` | locations × cell types | Normalized Phase 2 evidence | Comparing Phase 2 support |
-| `posterior_df` | locations × cell types or `None` | Combined priors and likelihoods | Preferred probabilistic output |
-| `assignment_df` | locations × cell types | Matrix used for hard assignment | Reassignment and diagnostics |
-| `assigned_labels` | locations × assignment columns | Final categorical labels | Plotting and annotation |
-| `diagnostics` | `dict` | Workflow and marker-generation metadata | QC and reproducibility |
-| `prepared_markers` | `PreparedMarkers` or `None` | Reusable marker preparation | Reusing DE results |
-
-`PreparedMarkers` stores reusable marker-generation output before spatial gene
-filtering. This lets the same marker preparation be filtered cheaply for
-different spatial gene universes.
+| `markers_df` | marker rows x metadata columns | Spatial-compatible markers after role routing and final de-duplication | Marker QC |
+| `phase1_result` | locations x groups | Thresholded Phase 1 expression evidence | Presence detection |
+| `priors_df` | locations x groups | Row-normalized Phase 1 evidence | Prior gating and refinement |
+| `phase2_result` | locations x groups | Raw Phase 2 similarity or rank evidence | Method diagnostics |
+| `likelihoods_df` | locations x groups | Normalized Phase 2 evidence | Compare Phase 2 support |
+| `posterior_df` | locations x groups or `None` | Combined prior and likelihood support | Preferred probabilistic matrix |
+| `assignment_df` | locations x groups | Matrix used for hard assignment | Reassignment and inspection |
+| `assigned_labels` | locations x assignment columns | Final categorical labels | Plotting and annotation |
+| `diagnostics` | `dict` | Marker, Phase 2, assignment, and workflow metadata | QC and reproducibility |
+| `prepared_markers` | `PreparedMarkers` or `None` | Reusable marker preparation passed into the workflow | Marker reuse |
 
 ## Which matrix should I use?
 
-- Spatial probability or composition plots: `result.posterior_df`
-- Presence or gating: `result.priors_df`
-- Inspecting marker similarity independently of Phase 1: `result.phase2_result`
-- Hard cell-type map: `result.assigned_labels`
-- Reassigning labels without recomputing scores: `result.assignment_df`
-- List-style marker mask workflow: `result.assignment_df` or `result.phase2_result`
+* Spatial support plots: `posterior_df` when available.
+* Phase 1 presence maps: `priors_df`.
+* Phase 2 method debugging: `phase2_result`.
+* Hard cell-type maps: `assigned_labels`.
+* Reassignment without rescoring: `assignment_df`.
+* List-style marker mask workflow: `assignment_df` or `phase2_result`.
 
-`posterior_df` is the preferred probabilistic output when available. It is
-`None` for list-style `marker_genes` mask workflows because those assign
-directly from Phase 2.
+## List-style marker_genes exception
 
-## Important interpretation note
+When `marker_genes` is a plain list, Phase 1 is used as a row mask rather than
+a cell-type-specific prior matrix. In that workflow `posterior_df` is `None`
+and `assignment_df` is `phase2_result`.
 
-Posterior rows are relative probabilities among the tested cell types. They are
-not automatically absolute cell fractions. Hard labels discard uncertainty, and
-mixed spatial locations can have meaningful support for multiple cell types.
-Inspect posterior maxima and diagnostics before interpreting assignments.
+## Interpretation warnings
 
-## Phase 2 expression handling
+Posterior rows are relative support among tested marker groups. They are not
+automatically absolute biological cell fractions. Spatial locations may contain
+mixtures, and hard labels discard uncertainty.
 
-UCell-like and AUC Phase 2 scoring rank only the resolved marker-union genes.
-Other marker-only similarity methods also extract only the marker union when
-that is mathematically equivalent.
+Assignment counts are counts of spatial units, not biological cell counts.
+Depending on the data, a unit may be a spot, bin, or segmented cell.
 
-Some set-based methods intentionally use the full expression row: Jaccard,
-overlap, and weighted Jaccard consider non-marker expressed genes in their
-denominators, so easydecon preserves the full-gene row for those methods.
+## Candidate-pruned matrices
 
-Sparse spatial matrices are processed row-wise during Phase 2 without
-densifying the complete spatial matrix. Individual selected rows are converted
-as needed for scoring.
+With `phase2_candidate_pruning=True`, noncandidate group entries are zero in
+`phase2_result` and `likelihoods_df`. With `phase2_candidate_threshold=0.0` and
+`prior_weight > 0`, the posterior is normally preserved for non-negative
+methods, but positive thresholds can change `posterior_df` and
+`assigned_labels`.
 
-## Candidate-pruned Phase 2 results
+Candidate pruning diagnostics live under:
 
-When `phase2_candidate_pruning=True`, Phase 1 priors define which cell types are
-scored at each spatial location. Noncandidate entries are zero in
-`phase2_result` and `likelihoods_df`. With the default pruning threshold of
-zero and `prior_weight > 0`, the final `posterior_df` is expected to match the
-unpruned posterior for non-negative similarity methods. Positive pruning
-thresholds are intentionally more aggressive and can change posterior
-probabilities or hard labels.
+```python
+result.diagnostics["phase2"]["performance"]
+```
+
+## Marker-role diagnostics
+
+Role routing diagnostics live under:
+
+```python
+result.diagnostics["marker_roles"]
+```
+
+They include the routing mode, roles used in Phase 1 and Phase 2, marker counts
+by group, and marker counts by role when available.
+
+## Summary helpers
 
 ```python
 summary = ed.summarize_easydecon_result(
@@ -71,6 +77,10 @@ summary = ed.summarize_easydecon_result(
     as_dataframe=False,
 )
 
-print(summary["posterior"])
-print(summary["assignments"])
+marker_summary = ed.summarize_marker_table(result.markers_df)
 ```
+
+`summarize_easydecon_result` reports marker counts, workflow settings, matrix
+shapes, row-sum statistics, assignment counts, and optional spatial alignment
+checks. `summarize_marker_table` returns compact per-group marker counts and
+top genes.

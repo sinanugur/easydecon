@@ -164,12 +164,22 @@ def test_read_markers_dataframe_returns_diagnostics():
         "prepared_markers_used",
         "marker_signature",
         "marker_generation_reused",
+        "marker_role_inference",
+        "top_n_applied_by",
     }
     assert diagnostics["source"] == "dataframe"
     assert diagnostics["n_markers"] == 3
     assert diagnostics["n_celltypes"] == 2
     assert diagnostics["marker_counts_per_celltype"] == {"A": 2, "B": 1}
     assert diagnostics["n_spatial_genes"] == 4
+    assert diagnostics["marker_role_inference"] == {
+        "mode": "none",
+        "requested": False,
+        "applied": False,
+        "existing_roles_preserved": False,
+        "input_source": None,
+    }
+    assert diagnostics["top_n_applied_by"] == "read_markers_dataframe"
 
 
 def test_read_markers_dataframe_verbose_false_suppresses_output(capsys):

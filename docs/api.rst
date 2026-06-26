@@ -1,109 +1,99 @@
-API Reference
+API reference
 =============
 
-The following sections expose the public Python API. Objects are grouped by
-module for clarity. The documentation uses ``autodoc`` to pull docstrings
-directly from the source code.
+This page documents the public objects exported by ``easydecon.__all__``.
+Private helpers and implementation modules are intentionally omitted.
 
-.. contents::
-   :local:
-   :depth: 2
+.. currentmodule:: easydecon
 
-Package API
------------
+Version
+-------
 
-The top-level ``easydecon`` package exports the main workflow and helper
-objects for normal use:
+.. autodata:: __version__
 
-``run_easydecon``
-   Alias for ``easydecon_workflow``.
+Core workflow
+-------------
 
-``EasyDeconResult``
-   Result object returned by ``run_easydecon(..., return_result_object=True)``.
+.. autofunction:: run_easydecon
 
-``PreparedMarkers``, ``prepare_markers``, ``select_prepared_markers``
-   Reusable marker-preparation utilities.
+.. autofunction:: easydecon_workflow
 
-``RefinedGroupResult``, ``refine_group``
-   Hierarchical refinement helpers.
-
-``get_table``, ``resolve_marker_columns``, ``standardize_marker_dataframe``
-   Schema and table-resolution helpers.
-
-``summarize_easydecon_result``, ``summarize_marker_table``
-   Diagnostics summaries.
-
-``detect_niches_from_easydecon_result``, ``summarize_niche_compositions``
-   Spatial niche utilities.
-
-Workflow
---------
-
-.. automodule:: easydecon.easydecon
+.. autoclass:: EasyDeconResult
    :members:
-   :undoc-members:
-   :show-inheritance:
 
-Workflow Orchestration
-----------------------
+Marker loading and preparation
+------------------------------
 
-.. automodule:: easydecon.extra
+.. autofunction:: read_markers_dataframe
+
+.. autofunction:: prepare_markers
+
+.. autofunction:: select_prepared_markers
+
+.. autofunction:: compute_reference_profile_markers
+
+.. autofunction:: compute_pseudobulk_deseq_markers
+
+.. autoclass:: PreparedMarkers
    :members:
-   :undoc-members:
-   :show-inheritance:
 
-Marker Preparation
-------------------
+Phase functions and assignment
+------------------------------
 
-.. automodule:: easydecon.markers
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. autofunction:: common_markers_gene_expression_and_filter
 
-Schema Helpers
---------------
+.. autofunction:: get_clusters_by_similarity_on_tissue
 
-.. automodule:: easydecon._schema
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Diagnostics
------------
-
-.. automodule:: easydecon.diagnostics
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. autofunction:: assign_clusters_from_df
 
 Refinement
 ----------
 
-.. automodule:: easydecon.refinement
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. autofunction:: refine_group
 
-Spatial Niches
+.. autoclass:: RefinedGroupResult
+   :members:
+
+Diagnostics
+-----------
+
+.. autofunction:: summarize_easydecon_result
+
+.. autofunction:: summarize_marker_table
+
+Niches
+------
+
+.. autofunction:: detect_spatial_niches_from_posteriors
+
+.. autofunction:: detect_niches_from_easydecon_result
+
+.. autofunction:: summarize_niche_compositions
+
+.. autofunction:: plot_niche_compositions
+
+Schema helpers
 --------------
 
-.. automodule:: easydecon.niche
+.. autoclass:: MarkerSchema
    :members:
-   :undoc-members:
-   :show-inheritance:
 
-Segmentation Utilities
-----------------------
+.. autofunction:: get_table
 
-.. automodule:: easydecon.segmentation
-   :members:
-   :undoc-members:
-   :show-inheritance:
+.. autofunction:: resolve_marker_columns
 
-Configuration
--------------
+.. autofunction:: standardize_marker_dataframe
 
-.. automodule:: easydecon.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
+Runtime configuration
+---------------------
+
+.. autofunction:: set_n_jobs
+
+.. autofunction:: set_batch_size
+
+Public constants
+----------------
+
+.. autodata:: UCELL_MARKER_ROLES
+
+.. autodata:: MARKER_ROLE_MODES
