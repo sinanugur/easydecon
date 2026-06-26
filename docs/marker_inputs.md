@@ -1,22 +1,25 @@
 # Marker inputs and table schema
 
-easydecon accepts markers through several routes. The source code resolves
-inputs in this priority order:
+easydecon accepts markers through several routes. `prepare_markers` is the
+shared source controller used by the workflow and by the backward-compatible
+`read_markers_dataframe` wrapper. Inputs are resolved in this priority order:
 
 1. `prepared_markers`
 2. `markers_df`
 3. `filename`
 4. `adata`
 
-If none of these is provided, `read_markers_dataframe` raises a `ValueError`.
+If none of these is provided, marker preparation raises a `ValueError`.
 
 ## Input routes
 
 `markers_df`
-: A pandas DataFrame passed directly. It is copied before standardization.
+: A pandas DataFrame passed directly. It is copied before standardization and
+  prepared as `marker_method="existing"`.
 
 `filename`
-: A CSV or Excel file read into a marker DataFrame.
+: A CSV or Excel file read into a marker DataFrame and prepared as
+  `marker_method="existing"`.
 
 `adata` with existing Scanpy results
 : If `adata.uns[marker_key]` exists, easydecon reads it with
@@ -57,6 +60,34 @@ result = ed.run_easydecon(
     return_result_object=True,
 )
 ```
+
+## Prepare once, select per spatial dataset
+
+`PreparedMarkers` is independent of a spatial gene universe. Use
+`prepare_markers` when you want to prepare markers once and reuse them, or let
+`run_easydecon` do this automatically and retrieve `result.prepared_markers`.
+
+```python
+prepared = ed.prepare_markers(
+    markers_df=deseq_df,
+    source="deseq_table",
+)
+
+result = ed.run_easydecon(
+    sdata,
+    prepared_markers=prepared,
+    return_result_object=True,
+)
+
+selected = ed.select_prepared_markers(
+    prepared,
+    gene_universe=sdata.tables["table"].var_names,
+)
+```
+
+`read_markers_dataframe` remains supported when you want the selected marker
+DataFrame directly for one spatial dataset; internally it delegates to
+`prepare_markers` and `select_prepared_markers`.
 
 PyDESeq2 markers:
 
@@ -146,7 +177,7 @@ for example Ensembl IDs in one table and gene symbols in the other.
 ## Top-N behavior
 
 Direct `ed.read_markers_dataframe(...)` applies `top_n_genes` during marker
-standardization. In `ed.run_easydecon(...)`, markers are first read with
+selection. In `ed.run_easydecon(...)`, markers are selected with
 `top_n_genes=None`, then `top_n_genes` is applied during Phase 1 and Phase 2
 role routing. With marker roles, the limit is per group and role.
 

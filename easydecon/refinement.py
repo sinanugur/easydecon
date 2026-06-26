@@ -10,13 +10,13 @@ import pandas as pd
 from ._schema import get_table
 from ._validation import MARKER_ROLE_INFERENCE_MODES, validate_choice
 from .easydecon import (
+    _build_marker_compat_diagnostics,
     _validate_finite_nonnegative,
     assign_clusters_from_df,
     get_clusters_by_similarity_on_tissue,
-    read_markers_dataframe,
 )
 from .extra import EasyDeconResult, _evidence_to_likelihood, easydecon_workflow
-from .markers import resolve_phase_marker_tables
+from .markers import prepare_markers, resolve_phase_marker_tables, select_prepared_markers
 
 
 REFINEMENT_MODES = frozenset({"full", "phase2"})
@@ -89,7 +89,7 @@ def _read_marker_kwargs(workflow_kwargs):
         "marker_method": "marker_method",
         "groupby": "groupby",
         "sample_col": "sample_col",
-        "marker_key": "key",
+        "marker_key": "marker_key",
         "top_n_genes": "top_n_genes",
         "sort_by_column": "sort_by_column",
         "ascending": "ascending",
@@ -288,19 +288,55 @@ def refine_group(
 
     else:
         child_result = None
-        read_kwargs = _read_marker_kwargs(workflow_kwargs)
-        requested_top_n = workflow_kwargs.get("top_n_genes", 60)
-        read_kwargs["top_n_genes"] = None
-        child_markers, marker_diagnostics = read_markers_dataframe(
-            child_table,
-            markers_df=markers_df,
-            prepared_markers=prepared_markers,
-            filename=filename,
+        marker_kwargs = _read_marker_kwargs(workflow_kwargs)
+        requested_top_n = marker_kwargs.pop("top_n_genes", 60)
+        sort_by_column = marker_kwargs.pop("sort_by_column", "scores")
+        ascending = marker_kwargs.pop("ascending", False)
+        log2fc_min = marker_kwargs.pop("log2fc_min", 0.25)
+        pval_cutoff = marker_kwargs.pop("pval_cutoff", 0.05)
+        drop_ribosomal = marker_kwargs.pop("drop_ribosomal", False)
+        drop_mitochondrial = marker_kwargs.pop("drop_mitochondrial", False)
+        celltype = marker_kwargs.pop("celltype", "group")
+        gene_id_column = marker_kwargs.pop("gene_id_column", "names")
+        marker_key = marker_kwargs.get("marker_key", "rank_genes_groups")
+        scanpy_method = marker_kwargs.get("scanpy_method", "wilcoxon")
+        groupby = marker_kwargs.get("groupby")
+        resolved_prepared = prepare_markers(
             adata=adata,
-            bin_size=bin_size,
-            return_diagnostics=True,
+            prepared_markers=prepared_markers,
+            markers_df=markers_df,
+            filename=filename,
+            marker_role_inference_log2fc_min=log2fc_min,
+            celltype=celltype,
+            gene_id_column=gene_id_column,
             verbose=verbose,
-            **read_kwargs,
+            **marker_kwargs,
+        )
+        child_markers, selection_diagnostics = select_prepared_markers(
+            resolved_prepared,
+            gene_universe=child_table.var_names,
+            top_n_genes=None,
+            sort_by_column=sort_by_column,
+            ascending=ascending,
+            log2fc_min=log2fc_min,
+            pval_cutoff=pval_cutoff,
+            drop_ribosomal=drop_ribosomal,
+            drop_mitochondrial=drop_mitochondrial,
+            return_diagnostics=True,
+        )
+        marker_diagnostics = _build_marker_compat_diagnostics(
+            resolved_prepared,
+            child_markers,
+            child_table,
+            marker_method=marker_kwargs.get("marker_method", "auto"),
+            groupby=groupby,
+            key=marker_key,
+            scanpy_method=scanpy_method,
+            marker_roles=workflow_kwargs.get("marker_roles", "shared"),
+            marker_role_inference=marker_kwargs.get("marker_role_inference", "none"),
+            prepared_markers_used=prepared_markers is not None,
+            selection_diagnostics=selection_diagnostics,
+            top_n_applied_by="refinement_phase_resolver",
         )
         _, phase2_markers, marker_role_diagnostics = resolve_phase_marker_tables(
             child_markers,

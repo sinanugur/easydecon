@@ -166,6 +166,9 @@ def test_read_markers_dataframe_returns_diagnostics():
         "marker_generation_reused",
         "marker_role_inference",
         "top_n_applied_by",
+        "input_kind",
+        "preparation",
+        "selection",
     }
     assert diagnostics["source"] == "dataframe"
     assert diagnostics["n_markers"] == 3
@@ -180,6 +183,9 @@ def test_read_markers_dataframe_returns_diagnostics():
         "input_source": None,
     }
     assert diagnostics["top_n_applied_by"] == "read_markers_dataframe"
+    assert diagnostics["input_kind"] == "dataframe"
+    assert diagnostics["preparation"]["input_kind"] == "dataframe"
+    assert diagnostics["selection"]["n_selected_markers"] == 3
 
 
 def test_read_markers_dataframe_verbose_false_suppresses_output(capsys):

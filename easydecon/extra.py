@@ -13,15 +13,20 @@ from ._validation import (
     validate_probability_range,
 )
 from .easydecon import (
+    _build_marker_compat_diagnostics,
     _validate_finite_nonnegative,
     _validate_nonempty_string,
     _validate_optional_positive_integer,
     assign_clusters_from_df,
     common_markers_gene_expression_and_filter,
     get_clusters_by_similarity_on_tissue,
-    read_markers_dataframe,
 )
-from .markers import PreparedMarkers, resolve_phase_marker_tables
+from .markers import (
+    PreparedMarkers,
+    prepare_markers,
+    resolve_phase_marker_tables,
+    select_prepared_markers,
+)
 
 
 def _evidence_to_likelihood(
@@ -362,33 +367,23 @@ def easydecon_workflow(
             "cell-type-specific priors."
         )
 
-    original_celltype = celltype
-    original_gene_id_column = gene_id_column
-    markers_df, marker_diagnostics = read_markers_dataframe(
-        sdata=sdata,
-        filename=filename,
-        adata=adata,
-        markers_df=markers_df,
-        prepared_markers=prepared_markers,
-        exclude_celltype=None,
+    table = get_table(
+        sdata,
         bin_size=bin_size,
-        top_n_genes=None,
-        sort_by_column=sort_by_column,
-        ascending=ascending,
-        gene_id_column=gene_id_column,
-        celltype=celltype,
-        key=marker_key,
-        log2fc_min=log2fc_min,
-        pval_cutoff=pval_cutoff,
-        drop_ribosomal=drop_ribosomal,
-        drop_mitochondrial=drop_mitochondrial,
         table_key=table_key,
         preferred_table_keys=preferred_table_keys,
+    )
+    original_celltype = celltype
+    original_gene_id_column = gene_id_column
+    resolved_prepared = prepare_markers(
+        adata=adata,
+        prepared_markers=prepared_markers,
+        markers_df=markers_df,
+        filename=filename,
         source=marker_source,
-        return_diagnostics=True,
-        verbose=verbose,
         marker_method=marker_method,
         groupby=groupby,
+        marker_key=marker_key,
         scanpy_method=scanpy_method,
         layer=layer,
         use_raw=use_raw,
@@ -417,6 +412,38 @@ def easydecon_workflow(
         reference_negative_min_detection=reference_negative_min_detection,
         reference_negative_min_detection_delta=reference_negative_min_detection_delta,
         marker_role_inference=marker_role_inference,
+        marker_role_inference_log2fc_min=log2fc_min,
+        celltype=celltype,
+        gene_id_column=gene_id_column,
+        verbose=verbose,
+    )
+    markers_df, selection_diagnostics = select_prepared_markers(
+        resolved_prepared,
+        gene_universe=table.var_names,
+        exclude_celltype=None,
+        top_n_genes=None,
+        sort_by_column=sort_by_column,
+        ascending=ascending,
+        log2fc_min=log2fc_min,
+        pval_cutoff=pval_cutoff,
+        drop_ribosomal=drop_ribosomal,
+        drop_mitochondrial=drop_mitochondrial,
+        source=marker_source,
+        return_diagnostics=True,
+    )
+    marker_diagnostics = _build_marker_compat_diagnostics(
+        resolved_prepared,
+        markers_df,
+        table,
+        marker_method=marker_method,
+        groupby=groupby,
+        key=marker_key,
+        scanpy_method=scanpy_method,
+        marker_roles=marker_roles,
+        marker_role_inference=marker_role_inference,
+        prepared_markers_used=prepared_markers is not None,
+        selection_diagnostics=selection_diagnostics,
+        top_n_applied_by="workflow_phase_resolver",
     )
     if not isinstance(markers_df, pd.DataFrame):
         raise ValueError("Resolved markers_df must be a pandas DataFrame.")
@@ -474,7 +501,7 @@ def easydecon_workflow(
     # Phase 1: Priors
     # -----------------------
     phase1_result = common_markers_gene_expression_and_filter(
-        sdata=sdata,
+        sdata=table,
         marker_genes=phase1_markers,
         celltype="group",
         gene_id_column="names",
@@ -506,14 +533,6 @@ def easydecon_workflow(
 
     prior_row_sums = priors_df.sum(axis=1)
     informative_spots = prior_row_sums[prior_row_sums > 0].index
-    table = get_table(
-        sdata,
-        bin_size=bin_size,
-        table_key=table_key,
-        preferred_table_keys=preferred_table_keys,
-    )
-
-    
 
     # initialize all spots to 0 (skip)
     table.obs[mask_col] = 0
@@ -548,7 +567,7 @@ def easydecon_workflow(
         )
     phase2_performance = {}
     phase2_result = get_clusters_by_similarity_on_tissue(
-        sdata=sdata,
+        sdata=table,
         markers_df=phase2_markers_df,
         bin_size=bin_size,
         gene_id_column="names",
@@ -645,7 +664,7 @@ def easydecon_workflow(
 
     assignment_df = posterior_df if posterior_df is not None and not marker_genes_is_list else phase2_result
     assigned_labels = assign_clusters_from_df(
-        sdata,
+        table,
         df=assignment_df,
         bin_size=bin_size,
         results_column=results_column,
@@ -725,7 +744,7 @@ def easydecon_workflow(
             posterior_df=posterior_df,
             assignment_df=assignment_df,
             diagnostics=diagnostics,
-            prepared_markers=prepared_markers,
+            prepared_markers=resolved_prepared,
         )
     result_tuple = (
         phase1_result,

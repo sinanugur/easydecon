@@ -43,8 +43,6 @@ import easydecon as ed
 result = ed.run_easydecon(
     sdata=sdata,
     markers_df=markers_df,
-    filtering_algorithm="quantile",
-    method="wjaccard",
     return_result_object=True,
     verbose=False,
 )
@@ -67,18 +65,45 @@ Start with [docs/index.rst](docs/index.rst). The documentation covers:
 * [results and interpretation](docs/results.md)
 * [Scanpy markers](docs/scanpy_markers.md)
 * [reference-profile markers](docs/reference_markers.md)
-* [UCell-like scoring](docs/ucell.md)
+* [Phase 1](docs/phase1.md) and [Phase 2](docs/phase2.md) methods
 * [refinement](docs/refinement.md)
 * [visualization](docs/visualization.md)
 * [synthetic validation](docs/validation.md)
 
 ## Marker methods
 
+`prepare_markers` is the reusable marker-preparation entry point. It accepts an
+AnnData reference, a marker DataFrame, a CSV/Excel marker file, or an existing
+`PreparedMarkers` object, then returns a canonical marker table that is still
+independent of any spatial gene universe. `run_easydecon` calls this controller
+for you, and stores the resolved preparation as `result.prepared_markers` when
+`return_result_object=True`.
+
+```python
+prepared = ed.prepare_markers(
+    markers_df=deseq_df,
+    source="deseq_table",
+)
+
+result = ed.run_easydecon(
+    sdata,
+    prepared_markers=prepared,
+    return_result_object=True,
+)
+```
+
+The prepared object can be reused on another spatial dataset; only inexpensive
+spatial gene filtering and phase routing are repeated. `select_prepared_markers`
+performs dataset-specific filtering, while internal phase routing applies the
+workflow `top_n_genes`. `read_markers_dataframe` remains supported for backward
+compatibility when a selected DataFrame is desired directly, but it is no
+longer the recommended modern marker-preparation API.
+
 easydecon can use existing marker tables, existing Scanpy
 `rank_genes_groups`, generated Scanpy markers, pseudobulk PyDESeq2 markers,
-reference-profile markers, and reusable `PreparedMarkers`.
-Use `marker_method` to select generated Scanpy, PyDESeq2, or
-reference-profile marker workflows.
+reference-profile markers, and reusable `PreparedMarkers`. Use `marker_method`
+to select generated Scanpy, PyDESeq2, or reference-profile marker workflows
+when preparing from AnnData.
 
 Scanpy marker generation expects suitable normalized/log-transformed input.
 PyDESeq2 requires raw integer counts and biological replicate labels; do not

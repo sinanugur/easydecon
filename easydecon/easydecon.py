@@ -1521,6 +1521,265 @@ def read_markers_dataframe(sdata,
     return df
 
 
+from .markers import (
+    PreparedMarkers as _PreparedMarkers,
+    _adata_has_rank_genes_groups as _adata_has_rank_genes_groups,
+    _build_one_vs_rest_pseudobulk as _build_one_vs_rest_pseudobulk,
+    _generate_scanpy_rank_genes_groups as _generate_scanpy_rank_genes_groups,
+    _get_adata_count_matrix as _get_adata_count_matrix,
+    compute_pseudobulk_deseq_markers as compute_pseudobulk_deseq_markers,
+    prepare_markers as _prepare_markers,
+    select_prepared_markers as _select_prepared_markers,
+)
+
+
+def _build_marker_compat_diagnostics(
+    prepared,
+    selected_df,
+    table,
+    *,
+    marker_method,
+    groupby,
+    key,
+    scanpy_method,
+    marker_roles,
+    marker_role_inference,
+    prepared_markers_used,
+    selection_diagnostics,
+    top_n_applied_by,
+):
+    prep_diagnostics = dict(getattr(prepared, "diagnostics", {}) or {})
+    input_kind = prep_diagnostics.get("input_kind")
+    role_inference = prep_diagnostics.get("marker_role_inference")
+    if prepared_markers_used and marker_role_inference == "scanpy_signed":
+        role_inference = {
+            "mode": "scanpy_signed",
+            "requested": True,
+            "applied": False,
+            "existing_roles_preserved": "marker_role" in prepared.raw_markers_df,
+            "input_source": selection_diagnostics.get("source", prepared.source),
+        }
+    if not isinstance(role_inference, dict):
+        role_inference = {
+            "mode": marker_role_inference,
+            "requested": marker_role_inference != "none",
+            "applied": False,
+            "existing_roles_preserved": False,
+            "input_source": None,
+        }
+
+    diagnostics = {
+        "source": selection_diagnostics.get("source", prepared.source),
+        "n_markers": int(selected_df.shape[0]),
+        "n_celltypes": int(selected_df["group"].nunique()),
+        "celltypes": selected_df["group"].drop_duplicates().tolist(),
+        "marker_counts_per_celltype": (
+            selected_df.groupby(selected_df["group"]).size().to_dict()
+        ),
+        "n_spatial_genes": int(len(table.var_names)),
+        "marker_method": prep_diagnostics.get(
+            "marker_method", getattr(prepared, "marker_method", marker_method)
+        ),
+        "groupby": prep_diagnostics.get("groupby", groupby),
+        "generated_rank_genes_groups": bool(
+            prep_diagnostics.get("generated_rank_genes_groups", False)
+        ),
+        "rank_genes_groups_key": key,
+        "scanpy_method": (
+            scanpy_method
+            if str(input_kind or "").startswith("anndata")
+            else None
+        ),
+        "generated_pseudobulk_deseq": bool(
+            prep_diagnostics.get("generated_pseudobulk_deseq", False)
+        ),
+        "pseudobulk_deseq": prep_diagnostics.get("pseudobulk_deseq"),
+        "generated_reference_profile": bool(
+            prep_diagnostics.get("generated_reference_profile", False)
+        ),
+        "reference_profile": prep_diagnostics.get("reference_profile"),
+        "reference_contrast": prep_diagnostics.get("reference_contrast"),
+        "prepared_markers_used": bool(prepared_markers_used),
+        "marker_signature": getattr(prepared, "signature", None),
+        "marker_generation_reused": bool(
+            prepared_markers_used or input_kind == "anndata_existing_scanpy"
+        ),
+        "marker_role_inference": role_inference,
+        "top_n_applied_by": top_n_applied_by,
+        "input_kind": input_kind,
+        "preparation": prep_diagnostics,
+        "selection": selection_diagnostics,
+    }
+    if "marker_role" in selected_df.columns:
+        diagnostics["marker_roles"] = marker_roles
+        diagnostics["marker_role_counts"] = (
+            selected_df["marker_role"].value_counts().astype(int).to_dict()
+        )
+    return diagnostics
+
+
+def read_markers_dataframe(sdata,
+                           filename=None,
+                           adata=None,
+                           exclude_celltype=None,
+                           bin_size=8,
+                           top_n_genes=60,
+                           sort_by_column="scores",
+                           ascending=False,
+                           gene_id_column="names",
+                           celltype="group",
+                           key="rank_genes_groups",
+                           log2fc_min=0.25,
+                           pval_cutoff=0.05,
+                           drop_ribosomal=False,
+                           drop_mitochondrial=False,
+                           markers_df=None,
+                           prepared_markers=None,
+                           table_key=None,
+                           preferred_table_keys=None,
+                           source=None,
+                           return_diagnostics=False,
+                           verbose=True,
+                           marker_method="auto",
+                           groupby=None,
+                           scanpy_method="wilcoxon",
+                           layer=None,
+                           use_raw=None,
+                           reference="rest",
+                           copy_adata=True,
+                           rank_genes_groups_kwargs=None,
+                           sample_col=None,
+                           min_cells_per_group=20,
+                           min_replicates_per_condition=2,
+                           deseq_alpha=0.05,
+                           deseq_n_cpus=None,
+                           deseq_quiet=True,
+                           deseq_kwargs=None,
+                           deseq_stats_kwargs=None,
+                           reference_min_cells=25,
+                           reference_min_mean=2e-4,
+                           reference_min_log2fc=1.0,
+                           reference_min_detection=0.10,
+                           reference_min_detection_delta=0.05,
+                           reference_pseudocount=1e-9,
+                           reference_contrast="max_other",
+                           marker_roles: str = "shared",
+                           reference_presence_min_log2fc: float = 0.5,
+                           reference_presence_min_detection_delta: float = 0.0,
+                           reference_negative_min_log2fc: float = 1.0,
+                           reference_negative_min_detection: float = 0.10,
+                           reference_negative_min_detection_delta: float = 0.05,
+                           marker_role_inference: str = "none"):
+    """Compatibility wrapper returning a spatial-selected marker DataFrame."""
+    if prepared_markers is not None and not isinstance(prepared_markers, _PreparedMarkers):
+        raise TypeError("prepared_markers must be a PreparedMarkers object.")
+    if (
+        prepared_markers is not None
+        and marker_role_inference == "scanpy_signed"
+        and "marker_role" not in prepared_markers.raw_markers_df.columns
+    ):
+        raise ValueError(
+            "PreparedMarkers does not contain inferred marker roles. "
+            "Recreate it with marker_role_inference='scanpy_signed'."
+        )
+    table = get_table(
+        sdata,
+        bin_size=bin_size,
+        table_key=table_key,
+        preferred_table_keys=preferred_table_keys,
+    )
+    prepared = _prepare_markers(
+        adata=adata,
+        prepared_markers=prepared_markers,
+        markers_df=markers_df,
+        filename=filename,
+        source=source,
+        marker_method=marker_method,
+        groupby=groupby,
+        marker_key=key,
+        scanpy_method=scanpy_method,
+        layer=layer,
+        use_raw=use_raw,
+        reference=reference,
+        copy_adata=copy_adata,
+        rank_genes_groups_kwargs=rank_genes_groups_kwargs,
+        sample_col=sample_col,
+        min_cells_per_group=min_cells_per_group,
+        min_replicates_per_condition=min_replicates_per_condition,
+        deseq_alpha=deseq_alpha,
+        deseq_n_cpus=deseq_n_cpus,
+        deseq_quiet=deseq_quiet,
+        deseq_kwargs=deseq_kwargs,
+        deseq_stats_kwargs=deseq_stats_kwargs,
+        reference_min_cells=reference_min_cells,
+        reference_min_mean=reference_min_mean,
+        reference_min_log2fc=reference_min_log2fc,
+        reference_min_detection=reference_min_detection,
+        reference_min_detection_delta=reference_min_detection_delta,
+        reference_pseudocount=reference_pseudocount,
+        reference_contrast=reference_contrast,
+        marker_roles=marker_roles,
+        reference_presence_min_log2fc=reference_presence_min_log2fc,
+        reference_presence_min_detection_delta=reference_presence_min_detection_delta,
+        reference_negative_min_log2fc=reference_negative_min_log2fc,
+        reference_negative_min_detection=reference_negative_min_detection,
+        reference_negative_min_detection_delta=reference_negative_min_detection_delta,
+        marker_role_inference=marker_role_inference,
+        marker_role_inference_log2fc_min=log2fc_min,
+        celltype=celltype,
+        gene_id_column=gene_id_column,
+        verbose=False,
+    )
+    df, selection_diagnostics = _select_prepared_markers(
+        prepared,
+        gene_universe=table.var_names,
+        exclude_celltype=exclude_celltype,
+        top_n_genes=top_n_genes,
+        sort_by_column=sort_by_column,
+        ascending=ascending,
+        log2fc_min=log2fc_min,
+        pval_cutoff=pval_cutoff,
+        drop_ribosomal=drop_ribosomal,
+        drop_mitochondrial=drop_mitochondrial,
+        source=source,
+        return_diagnostics=True,
+    )
+
+    prep_diagnostics = getattr(prepared, "diagnostics", {}) or {}
+    if verbose and prep_diagnostics.get("generated_rank_genes_groups"):
+        print(
+            "Generated marker genes using sc.tl.rank_genes_groups with "
+            f"groupby={groupby!r}, method={scanpy_method!r}."
+        )
+    if verbose and prep_diagnostics.get("generated_pseudobulk_deseq"):
+        print(
+            "Generated marker genes using pseudobulk PyDESeq2 with "
+            f"groupby={groupby!r}, sample_col={sample_col!r}."
+        )
+    if verbose:
+        print("Unique cell types detected in the dataframe:")
+        print(df["group"].unique())
+
+    if return_diagnostics:
+        diagnostics = _build_marker_compat_diagnostics(
+            prepared,
+            df,
+            table,
+            marker_method=marker_method,
+            groupby=groupby,
+            key=key,
+            scanpy_method=scanpy_method,
+            marker_roles=marker_roles,
+            marker_role_inference=marker_role_inference,
+            prepared_markers_used=prepared_markers is not None,
+            selection_diagnostics=selection_diagnostics,
+            top_n_applied_by=(
+                "read_markers_dataframe" if top_n_genes is not None else None
+            ),
+        )
+        return df, diagnostics
+    return df
+
 
 def assign_clusters_from_df(
     sdata,

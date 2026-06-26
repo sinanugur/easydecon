@@ -224,6 +224,24 @@ def summarize_easydecon_result(
         markers_summary["marker_source"] = marker_diagnostics["source"]
     if marker_diagnostics.get("reference_contrast") is not None:
         markers_summary["reference_contrast"] = marker_diagnostics["reference_contrast"]
+    if marker_diagnostics.get("input_kind") is not None:
+        markers_summary["preparation_input_kind"] = marker_diagnostics["input_kind"]
+    selection_diagnostics = marker_diagnostics.get("selection")
+    if isinstance(selection_diagnostics, dict):
+        markers_summary["n_spatial_selected_markers"] = selection_diagnostics.get(
+            "n_selected_markers"
+        )
+    prepared = getattr(result, "prepared_markers", None)
+    if prepared is not None:
+        markers_summary["prepared_marker_method"] = getattr(
+            prepared, "marker_method", None
+        )
+        markers_summary["prepared_marker_signature"] = getattr(
+            prepared, "signature", None
+        )
+        raw_markers = getattr(prepared, "raw_markers_df", None)
+        if isinstance(raw_markers, pd.DataFrame):
+            markers_summary["n_raw_prepared_markers"] = int(raw_markers.shape[0])
     inference = marker_diagnostics.get("marker_role_inference")
     if isinstance(inference, dict) and (
         inference.get("requested") or inference.get("applied")

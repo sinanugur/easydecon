@@ -24,6 +24,14 @@ Core workflow
 Marker loading and preparation
 ------------------------------
 
+``prepare_markers`` owns source loading, marker generation, alias resolution,
+canonical preparation, and optional source-level role inference. It returns a
+spatial-unfiltered ``PreparedMarkers`` object. ``select_prepared_markers`` owns
+spatial-specific marker selection. ``resolve_phase_marker_tables`` is an
+internal workflow helper for Phase 1/Phase 2 routing and workflow top-N
+selection. ``read_markers_dataframe`` remains a supported backward-compatible
+convenience wrapper that returns a selected DataFrame.
+
 .. autofunction:: read_markers_dataframe
 
 .. autofunction:: prepare_markers

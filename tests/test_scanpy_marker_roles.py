@@ -10,6 +10,7 @@ import easydecon.refinement as refinement_module
 from easydecon._schema import standardize_marker_dataframe
 from easydecon.config import config
 from easydecon.markers import (
+    PreparedMarkers,
     infer_scanpy_signed_marker_roles,
     prepare_markers,
     resolve_phase_marker_tables,
@@ -346,16 +347,42 @@ def test_prepared_without_roles_rejects_late_inference_and_with_roles_accepts(mo
 
 
 def test_workflow_always_reads_with_top_n_none(monkeypatch):
-    calls = []
+    select_calls = []
+    prepare_calls = []
 
-    def fake_read(*args, **kwargs):
-        calls.append(kwargs["top_n_genes"])
-        return (
-            standardize_marker_dataframe(_phase_specific_markers(), log2fc_min=0.0, pval_cutoff=1.0, top_n_genes=None),
-            {"marker_role_inference": {"mode": "none", "requested": False, "applied": False}},
+    def fake_prepare(*args, **kwargs):
+        prepare_calls.append(kwargs)
+        return PreparedMarkers(
+            raw_markers_df=standardize_marker_dataframe(
+                _phase_specific_markers(),
+                log2fc_min=0.0,
+                pval_cutoff=1.0,
+                top_n_genes=None,
+            ),
+            marker_method="existing",
+            source="fake",
+            diagnostics={
+                "source": "fake",
+                "input_kind": "dataframe",
+                "marker_method": "existing",
+                "marker_role_inference": {"mode": "none", "requested": False, "applied": False},
+            },
+            signature="fake",
         )
 
-    monkeypatch.setattr(extra_module, "read_markers_dataframe", fake_read)
+    def fake_select(prepared, *args, **kwargs):
+        select_calls.append(kwargs["top_n_genes"])
+        selected = prepared.raw_markers_df.copy()
+        if kwargs.get("return_diagnostics"):
+            return selected, {
+                "source": prepared.source,
+                "n_selected_markers": int(selected.shape[0]),
+                "marker_counts_per_group": selected.groupby(selected["group"]).size().to_dict(),
+            }
+        return selected
+
+    monkeypatch.setattr(extra_module, "prepare_markers", fake_prepare)
+    monkeypatch.setattr(extra_module, "select_prepared_markers", fake_select)
     monkeypatch.setattr(
         extra_module,
         "common_markers_gene_expression_and_filter",
@@ -375,7 +402,8 @@ def test_workflow_always_reads_with_top_n_none(monkeypatch):
     extra_module.easydecon_workflow(table, markers_df=_signed_markers(), marker_roles="shared", verbose=False)
     extra_module.easydecon_workflow(table, markers_df=_signed_markers(), marker_roles="phase_specific", verbose=False)
 
-    assert calls == [None, None]
+    assert len(prepare_calls) == 2
+    assert select_calls == [None, None]
 
 
 def test_scanpy_signed_inference_phase_specific_raises_helpful_error():
@@ -428,14 +456,39 @@ def test_scanpy_signed_default_none_excludes_negative_rows():
 def test_phase2_refinement_forwards_marker_role_inference(monkeypatch):
     captured = {}
 
-    def fake_read(*args, **kwargs):
+    def fake_prepare(*args, **kwargs):
         captured.update(kwargs)
-        return (
-            standardize_marker_dataframe(_signed_markers(), log2fc_min=-np.inf, pval_cutoff=1.0, top_n_genes=None),
-            {},
+        return PreparedMarkers(
+            raw_markers_df=standardize_marker_dataframe(
+                _signed_markers(),
+                log2fc_min=-np.inf,
+                pval_cutoff=1.0,
+                top_n_genes=None,
+            ),
+            marker_method="existing",
+            source="fake",
+            diagnostics={
+                "source": "fake",
+                "input_kind": "dataframe",
+                "marker_method": "existing",
+                "marker_role_inference": {"mode": "scanpy_signed", "requested": True, "applied": True},
+            },
+            signature="fake",
         )
 
-    monkeypatch.setattr(refinement_module, "read_markers_dataframe", fake_read)
+    def fake_select(prepared, *args, **kwargs):
+        captured["selection_top_n_genes"] = kwargs["top_n_genes"]
+        selected = prepared.raw_markers_df.copy()
+        if kwargs.get("return_diagnostics"):
+            return selected, {
+                "source": prepared.source,
+                "n_selected_markers": int(selected.shape[0]),
+                "marker_counts_per_group": selected.groupby(selected["group"]).size().to_dict(),
+            }
+        return selected
+
+    monkeypatch.setattr(refinement_module, "prepare_markers", fake_prepare)
+    monkeypatch.setattr(refinement_module, "select_prepared_markers", fake_select)
     monkeypatch.setattr(
         refinement_module,
         "get_clusters_by_similarity_on_tissue",
@@ -469,4 +522,4 @@ def test_phase2_refinement_forwards_marker_role_inference(monkeypatch):
     )
 
     assert captured["marker_role_inference"] == "scanpy_signed"
-    assert captured["top_n_genes"] is None
+    assert captured["selection_top_n_genes"] is None

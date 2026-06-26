@@ -1,9 +1,9 @@
 # Reusing marker preparation
 
-`PreparedMarkers` separates expensive marker generation from spatial
-gene-universe filtering. It stores a standardized but spatial-unfiltered marker
-table so one single-cell reference can be reused across multiple spatial
-datasets.
+`PreparedMarkers` separates marker preparation from spatial gene-universe
+filtering. It stores a standardized but spatial-unfiltered marker table so one
+single-cell reference, one DESeq-style marker table, or one marker file can be
+reused across multiple spatial datasets.
 
 ## What PreparedMarkers stores
 
@@ -13,7 +13,8 @@ datasets.
 : Standardized marker rows before filtering to a spatial gene universe.
 
 `marker_method`
-: Normalized method name such as `scanpy`, `pydeseq2`, or `reference`.
+: Normalized method name such as `existing`, `scanpy`, `pydeseq2`, or
+  `reference`.
 
 `source`
 : Source label, for example `scanpy_generated['rank_genes_groups']` or
@@ -26,8 +27,32 @@ datasets.
 : Marker-generation diagnostics.
 
 `signature`
-: A deterministic practical signature based on marker method, parameters,
-  reference annotations, gene names, sample labels, and expression summary.
+: A deterministic practical signature. AnnData preparations include marker
+  method, parameters, reference annotations, gene names, sample labels, and an
+  expression summary. Table preparations include canonical table content,
+  dtypes, marker roles, and preparation parameters.
+
+## Function responsibilities
+
+`prepare_markers`
+: Source loading, marker generation, alias resolution, canonicalization, and
+  optional signed Scanpy role inference. It accepts AnnData, marker DataFrames,
+  marker files, or existing `PreparedMarkers` objects. It does not filter to a
+  spatial gene universe.
+
+`select_prepared_markers`
+: Spatial-specific marker selection from a `PreparedMarkers` object. It applies
+  spatial gene intersection, generic log-fold-change and p-value filters,
+  mitochondrial/ribosomal filtering, excluded cell types, and optional direct
+  top-N selection.
+
+`resolve_phase_marker_tables`
+: Internal Phase 1/Phase 2 role routing and workflow top-N selection.
+
+`read_markers_dataframe`
+: Supported backward-compatible convenience wrapper that returns a selected
+  DataFrame for one spatial dataset. It delegates to
+  `prepare_markers` and `select_prepared_markers`; it is not deprecated.
 
 ## Example: reuse one reference
 
@@ -63,22 +88,24 @@ Marker generation runs once. For each spatial dataset, easydecon filters the
 prepared marker table to the dataset's `var_names` and applies marker
 thresholds, ribosomal/mitochondrial filters, and top-N selection.
 
-## Function responsibilities
+## Example: reuse an existing DESeq-style table
 
-`prepare_markers`
-: Generate or extract a reusable marker table from `adata`. It does not filter
-  to a spatial gene universe.
+```python
+prepared = ed.prepare_markers(
+    markers_df=deseq_df,
+    source="deseq_table",
+)
 
-`select_prepared_markers`
-: Filter a `PreparedMarkers` object to a spatial gene universe.
+result = ed.run_easydecon(
+    sdata,
+    prepared_markers=prepared,
+    return_result_object=True,
+)
+```
 
-`read_markers_dataframe`
-: Resolve one marker source for one spatial table. If `prepared_markers` is
-  passed, it delegates to `select_prepared_markers`.
-
-`run_easydecon`
-: Reads markers with deferred top-N behavior, routes markers by phase, then
-  runs Phase 1 and Phase 2.
+Common DESeq-style aliases such as `cell_type`, `gene`, `log2FoldChange`,
+`padj`, and `stat` are canonicalized to `group`, `names`, `logfoldchanges`,
+`pvals_adj`, and `scores`.
 
 ## When to regenerate
 

@@ -732,6 +732,346 @@ def compute_reference_profile_markers(
     return markers, diagnostics
 
 
+def _adata_has_rank_genes_groups(adata, key):
+    return hasattr(adata, "uns") and key in adata.uns
+
+
+def _generate_scanpy_rank_genes_groups(
+    adata,
+    groupby,
+    key,
+    scanpy_method="wilcoxon",
+    layer=None,
+    use_raw=None,
+    reference="rest",
+    copy_adata=True,
+    rank_genes_groups_kwargs=None,
+):
+    if groupby is None:
+        raise ValueError(
+            "groupby is required to generate markers from AnnData. Provide the "
+            "obs column containing cell-type or cluster labels."
+        )
+    if not hasattr(adata, "obs") or groupby not in adata.obs.columns:
+        raise ValueError(f"groupby={groupby!r} was not found in adata.obs.columns.")
+
+    kwargs = dict(rank_genes_groups_kwargs or {})
+    try:
+        work_adata = adata.copy() if copy_adata else adata
+        if str(work_adata.obs[groupby].dtype) != "category":
+            work_adata.obs[groupby] = (
+                work_adata.obs[groupby].astype(str).astype("category")
+            )
+        sc.tl.rank_genes_groups(
+            work_adata,
+            groupby=groupby,
+            method=scanpy_method,
+            key_added=key,
+            layer=layer,
+            use_raw=use_raw,
+            reference=reference,
+            **kwargs,
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Could not generate markers with sc.tl.rank_genes_groups. Ensure "
+            "adata contains normalized/log-transformed expression or provide a "
+            "precomputed markers_df/filename."
+        ) from exc
+    return work_adata
+
+
+def _pydeseq2_counts_error():
+    return ValueError(
+        "PyDESeq2 marker generation requires raw non-negative integer counts. "
+        "Provide layer='counts' or another raw-count layer."
+    )
+
+
+def _get_adata_count_matrix(adata, layer="counts"):
+    """Return a cells-by-genes raw-count DataFrame for pseudobulk analysis."""
+    try:
+        if layer is not None:
+            if not hasattr(adata, "layers") or layer not in adata.layers:
+                raise _pydeseq2_counts_error()
+            matrix = adata.layers[layer]
+        else:
+            matrix = adata.X
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise _pydeseq2_counts_error() from exc
+
+    if matrix is None:
+        raise _pydeseq2_counts_error()
+
+    if issparse(matrix):
+        values_to_check = np.asarray(matrix.data)
+    else:
+        values_to_check = np.asarray(matrix)
+
+    try:
+        finite = np.isfinite(values_to_check)
+        if not finite.all():
+            raise _pydeseq2_counts_error()
+        if np.any(values_to_check < 0):
+            raise _pydeseq2_counts_error()
+        nonzero_values = values_to_check[values_to_check != 0]
+        if nonzero_values.size and not np.allclose(
+            nonzero_values, np.round(nonzero_values)
+        ):
+            raise _pydeseq2_counts_error()
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith(
+            "PyDESeq2 marker generation requires"
+        ):
+            raise
+        raise _pydeseq2_counts_error() from exc
+
+    dense_counts = matrix.toarray() if issparse(matrix) else np.asarray(matrix)
+    return pd.DataFrame(
+        dense_counts,
+        index=adata.obs_names,
+        columns=adata.var_names,
+    )
+
+
+def _build_one_vs_rest_pseudobulk(
+    adata,
+    target_group,
+    groupby,
+    sample_col,
+    counts_df,
+    min_cells_per_group=20,
+    min_replicates_per_condition=2,
+):
+    """Aggregate raw counts by biological sample for one-vs-rest testing."""
+    group_values = adata.obs[groupby].astype(str)
+    sample_values = adata.obs[sample_col].astype(str)
+    target_group = str(target_group)
+    pseudobulk_rows = []
+    metadata_rows = []
+
+    for sample in sorted(sample_values.drop_duplicates().tolist()):
+        sample_mask = sample_values == sample
+        condition_masks = {
+            "target": sample_mask & (group_values == target_group),
+            "rest": sample_mask & (group_values != target_group),
+        }
+        for condition, mask in condition_masks.items():
+            cell_ids = adata.obs_names[np.asarray(mask)]
+            if len(cell_ids) < min_cells_per_group:
+                continue
+            row_name = f"{sample}__{target_group}__{condition}"
+            summed = counts_df.loc[cell_ids].sum(axis=0)
+            summed.name = row_name
+            pseudobulk_rows.append(summed)
+            metadata_rows.append((row_name, condition))
+
+    if pseudobulk_rows:
+        counts_pb = pd.DataFrame(pseudobulk_rows, columns=counts_df.columns)
+        metadata_pb = pd.DataFrame(
+            metadata_rows, columns=["pseudobulk_sample", "condition"]
+        ).set_index("pseudobulk_sample")
+        metadata_pb.index.name = counts_pb.index.name
+    else:
+        counts_pb = pd.DataFrame(columns=counts_df.columns)
+        metadata_pb = pd.DataFrame(columns=["condition"])
+
+    condition_counts = (
+        metadata_pb["condition"].value_counts() if not metadata_pb.empty else {}
+    )
+    n_target = int(condition_counts.get("target", 0))
+    n_rest = int(condition_counts.get("rest", 0))
+    stats = {
+        "n_target_replicates": n_target,
+        "n_rest_replicates": n_rest,
+        "skipped": False,
+    }
+    if (
+        n_target < min_replicates_per_condition
+        or n_rest < min_replicates_per_condition
+    ):
+        stats["skipped"] = True
+        stats["reason"] = (
+            "Insufficient pseudobulk replicates after cell-count filtering: "
+            f"target={n_target}, rest={n_rest}, required="
+            f"{min_replicates_per_condition} per condition."
+        )
+        return (
+            pd.DataFrame(columns=counts_df.columns),
+            pd.DataFrame(columns=["condition"]),
+            stats,
+        )
+
+    return counts_pb, metadata_pb, stats
+
+
+def _instantiate_pydeseq2_with_fallback(
+    constructor,
+    *args,
+    quiet=True,
+    n_cpus=None,
+    **kwargs,
+):
+    attempts = [
+        {"quiet": quiet, "n_cpus": n_cpus},
+        {"n_cpus": n_cpus},
+        {"quiet": quiet},
+        {},
+    ]
+    last_error = None
+    for optional_kwargs in attempts:
+        call_kwargs = dict(kwargs)
+        for name, value in optional_kwargs.items():
+            if name not in call_kwargs:
+                call_kwargs[name] = value
+        try:
+            return constructor(*args, **call_kwargs)
+        except TypeError as exc:
+            last_error = exc
+    raise last_error
+
+
+def _run_pydeseq2_one_vs_rest(
+    counts_pb,
+    metadata_pb,
+    condition_col="condition",
+    tested_level="target",
+    reference_level="rest",
+    alpha=0.05,
+    n_cpus=None,
+    quiet=True,
+    deseq_kwargs=None,
+    deseq_stats_kwargs=None,
+):
+    """Fit one PyDESeq2 target-vs-rest pseudobulk contrast."""
+    try:
+        from pydeseq2.dds import DeseqDataSet
+        from pydeseq2.ds import DeseqStats
+    except ImportError as exc:
+        raise ImportError(
+            "marker_method='pydeseq2' requires pydeseq2. Install it with "
+            "`pip install pydeseq2`."
+        ) from exc
+
+    dds = _instantiate_pydeseq2_with_fallback(
+        DeseqDataSet,
+        counts=counts_pb,
+        metadata=metadata_pb,
+        design_factors=condition_col,
+        quiet=quiet,
+        n_cpus=n_cpus,
+        **dict(deseq_kwargs or {}),
+    )
+    dds.deseq2()
+    stat_res = _instantiate_pydeseq2_with_fallback(
+        DeseqStats,
+        dds,
+        contrast=[condition_col, tested_level, reference_level],
+        alpha=alpha,
+        quiet=quiet,
+        n_cpus=n_cpus,
+        **dict(deseq_stats_kwargs or {}),
+    )
+    stat_res.summary()
+    results_df = getattr(stat_res, "results_df", None)
+    if results_df is None:
+        raise ValueError("PyDESeq2 did not provide a results_df table.")
+    return results_df
+
+
+def compute_pseudobulk_deseq_markers(
+    adata,
+    groupby,
+    sample_col,
+    layer="counts",
+    min_cells_per_group=20,
+    min_replicates_per_condition=2,
+    alpha=0.05,
+    n_cpus=None,
+    quiet=True,
+    deseq_kwargs=None,
+    deseq_stats_kwargs=None,
+):
+    """Generate one-vs-rest pseudobulk marker tables with PyDESeq2."""
+    if groupby is None:
+        raise ValueError("groupby is required for pseudobulk PyDESeq2 markers.")
+    if not hasattr(adata, "obs") or groupby not in adata.obs.columns:
+        raise ValueError(f"groupby={groupby!r} was not found in adata.obs.columns.")
+    if sample_col is None:
+        raise ValueError("sample_col is required for pseudobulk PyDESeq2 markers.")
+    if sample_col not in adata.obs.columns:
+        raise ValueError(f"sample_col={sample_col!r} was not found in adata.obs.columns.")
+
+    counts_df = _get_adata_count_matrix(adata, layer=layer)
+    groups = sorted(adata.obs[groupby].astype(str).unique().tolist())
+    diagnostics = {
+        "method": "pydeseq2_pseudobulk",
+        "groupby": groupby,
+        "sample_col": sample_col,
+        "layer": layer,
+        "groups_attempted": groups,
+        "groups_completed": [],
+        "groups_skipped": {},
+        "min_cells_per_group": min_cells_per_group,
+        "min_replicates_per_condition": min_replicates_per_condition,
+    }
+    marker_tables = []
+
+    for target_group in groups:
+        counts_pb, metadata_pb, group_stats = _build_one_vs_rest_pseudobulk(
+            adata,
+            target_group=target_group,
+            groupby=groupby,
+            sample_col=sample_col,
+            counts_df=counts_df,
+            min_cells_per_group=min_cells_per_group,
+            min_replicates_per_condition=min_replicates_per_condition,
+        )
+        if group_stats["skipped"]:
+            diagnostics["groups_skipped"][target_group] = group_stats
+            continue
+
+        results = _run_pydeseq2_one_vs_rest(
+            counts_pb,
+            metadata_pb,
+            alpha=alpha,
+            n_cpus=n_cpus,
+            quiet=quiet,
+            deseq_kwargs=deseq_kwargs,
+            deseq_stats_kwargs=deseq_stats_kwargs,
+        ).copy()
+        required_results = {"log2FoldChange", "padj"}
+        if not required_results.issubset(results.columns):
+            missing = sorted(required_results.difference(results.columns))
+            raise ValueError(
+                f"PyDESeq2 results are missing required columns: {missing}."
+            )
+        results["group"] = target_group
+        results["names"] = results.index.astype(str)
+        results["logfoldchanges"] = results["log2FoldChange"]
+        results["pvals_adj"] = results["padj"]
+        if "stat" in results.columns:
+            results["scores"] = pd.to_numeric(
+                results["stat"], errors="coerce"
+            ).abs()
+        else:
+            adjusted = pd.to_numeric(results["padj"], errors="coerce")
+            results["scores"] = -np.log10(
+                adjusted.clip(lower=np.finfo(float).tiny)
+            )
+        marker_tables.append(results.reset_index(drop=True))
+        diagnostics["groups_completed"].append(target_group)
+
+    if not marker_tables:
+        raise ValueError(
+            "No groups produced pseudobulk PyDESeq2 markers. Skipped group "
+            f"diagnostics: {diagnostics['groups_skipped']}"
+        )
+    return pd.concat(marker_tables, ignore_index=True), diagnostics
+
+
 def _obs_values_for_signature(adata, column):
     if column is None or not hasattr(adata, "obs") or column not in adata.obs:
         return None
@@ -812,6 +1152,70 @@ def make_marker_signature(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _marker_table_content_hash(markers_df) -> str:
+    """Return a deterministic hash for marker table content."""
+    if not isinstance(markers_df, pd.DataFrame):
+        raise TypeError("markers_df must be a pandas DataFrame.")
+    table = markers_df.reset_index(drop=True).copy()
+    payload = {
+        "columns": [str(column) for column in table.columns],
+        "dtypes": {str(column): str(dtype) for column, dtype in table.dtypes.items()},
+        "row_count": int(table.shape[0]),
+        "column_count": int(table.shape[1]),
+        "hash_values": [
+            int(value)
+            for value in pd.util.hash_pandas_object(table, index=True).to_numpy()
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def make_marker_table_signature(
+    markers_df,
+    marker_method,
+    parameters,
+) -> str:
+    """Build a deterministic signature for existing marker tables."""
+    payload = {
+        "marker_method": _normalize_marker_method(marker_method),
+        "parameters": _normalize_marker_parameters(parameters),
+        "table_content_hash": _marker_table_content_hash(markers_df),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _input_kind_from_sources(prepared_markers, markers_df, filename, adata):
+    if prepared_markers is not None:
+        return "prepared_markers"
+    if markers_df is not None:
+        return "dataframe"
+    if filename is not None:
+        return "file"
+    if adata is not None:
+        return "anndata"
+    return None
+
+
+def _ignored_marker_inputs(chosen_kind, prepared_markers, markers_df, filename, adata):
+    priority = [
+        ("prepared_markers", prepared_markers),
+        ("dataframe", markers_df),
+        ("file", filename),
+        ("anndata", adata),
+    ]
+    seen_chosen = False
+    ignored = []
+    for kind, value in priority:
+        if kind == chosen_kind:
+            seen_chosen = True
+            continue
+        if seen_chosen and value is not None:
+            ignored.append(kind)
+    return ignored
+
+
 @dataclass
 class PreparedMarkers:
     raw_markers_df: pd.DataFrame
@@ -842,8 +1246,15 @@ class PreparedMarkers:
 
 
 def prepare_markers(
-    adata,
+    adata=None,
     marker_method="auto",
+    *,
+    prepared_markers=None,
+    markers_df=None,
+    filename=None,
+    source=None,
+    celltype: str = "group",
+    gene_id_column: str = "names",
     groupby=None,
     marker_key="rank_genes_groups",
     scanpy_method="wilcoxon",
@@ -874,16 +1285,32 @@ def prepare_markers(
     reference_negative_min_detection: float = 0.10,
     reference_negative_min_detection_delta: float = 0.05,
     marker_role_inference: str = "none",
+    marker_role_inference_log2fc_min: float = 0.25,
     verbose=True,
 ) -> PreparedMarkers:
-    """Generate or extract reusable, spatial-unfiltered marker tables."""
-    normalized_method = _normalize_marker_method(marker_method)
+    """Load, generate, or reuse a spatial-unfiltered marker preparation."""
+    if prepared_markers is not None:
+        if not isinstance(prepared_markers, PreparedMarkers):
+            raise TypeError("prepared_markers must be a PreparedMarkers object.")
+        return prepared_markers
+
+    chosen_kind = _input_kind_from_sources(
+        prepared_markers, markers_df, filename, adata
+    )
+    if chosen_kind is None:
+        raise ValueError(
+            "Please provide prepared_markers, markers_df, filename, or an adata object."
+        )
+
+    requested_method = _normalize_marker_method(marker_method)
+    normalized_method = "existing" if chosen_kind in {"dataframe", "file"} else requested_method
     validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
     _validate_marker_role_inference_for_method(
         marker_role_inference, normalized_method
     )
     if (
-        marker_roles == "phase_specific"
+        chosen_kind == "anndata"
+        and marker_roles == "phase_specific"
         and normalized_method not in REFERENCE_MARKER_METHODS
         and marker_role_inference != "scanpy_signed"
     ):
@@ -892,7 +1319,15 @@ def prepare_markers(
             "marker_method='reference'. Provide a marker table with marker_role for "
             "Scanpy or DESeq-derived markers."
         )
+    if marker_role_inference == "scanpy_signed":
+        marker_role_inference_log2fc_min = _validate_reference_float_nonnegative(
+            marker_role_inference_log2fc_min,
+            "marker_role_inference_log2fc_min",
+        )
+    else:
+        marker_role_inference_log2fc_min = 0.25
     parameters = {
+        "marker_method": normalized_method,
         "groupby": groupby,
         "marker_key": marker_key,
         "scanpy_method": scanpy_method,
@@ -923,15 +1358,26 @@ def prepare_markers(
         "reference_negative_min_detection": reference_negative_min_detection,
         "reference_negative_min_detection_delta": reference_negative_min_detection_delta,
         "marker_role_inference": marker_role_inference,
+        "marker_role_inference_log2fc_min": marker_role_inference_log2fc_min,
+        "celltype": celltype,
+        "gene_id_column": gene_id_column,
         "verbose": verbose,
     }
     normalized_parameters = _normalize_marker_parameters(parameters)
     diagnostics = {
         "marker_method": normalized_method,
+        "requested_marker_method": requested_method,
+        "input_kind": chosen_kind,
+        "ignored_input_kinds": _ignored_marker_inputs(
+            chosen_kind, prepared_markers, markers_df, filename, adata
+        ),
         "groupby": groupby,
         "generated_rank_genes_groups": False,
         "generated_pseudobulk_deseq": False,
         "generated_reference_profile": False,
+        "pseudobulk_deseq": None,
+        "reference_profile": None,
+        "reference_contrast": None,
         "marker_role_inference": {
             "mode": marker_role_inference,
             "requested": marker_role_inference != "none",
@@ -941,7 +1387,32 @@ def prepare_markers(
         },
     }
 
-    if normalized_method in REFERENCE_MARKER_METHODS:
+    schema = MarkerSchema(group_col=celltype, gene_col=gene_id_column)
+    table_signature = False
+
+    if chosen_kind == "dataframe":
+        if not isinstance(markers_df, pd.DataFrame):
+            raise TypeError("markers_df must be a pandas DataFrame.")
+        raw_df = markers_df
+        resolved_source = source if source is not None else "dataframe"
+        diagnostics["source"] = resolved_source
+        table_signature = True
+
+    elif chosen_kind == "file":
+        try:
+            raw_df = pd.read_csv(filename)
+        except Exception:
+            try:
+                raw_df = pd.read_excel(filename)
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not read marker file {filename!r} as CSV or Excel."
+                ) from exc
+        resolved_source = source if source is not None else "file"
+        diagnostics["source"] = resolved_source
+        table_signature = True
+
+    elif normalized_method in REFERENCE_MARKER_METHODS:
         raw_df, reference_diagnostics = compute_reference_profile_markers(
             adata,
             groupby=groupby,
@@ -966,11 +1437,11 @@ def prepare_markers(
         diagnostics["generated_reference_profile"] = True
         diagnostics["reference_profile"] = reference_diagnostics
         diagnostics["reference_contrast"] = reference_contrast
-        source = "reference_profile"
+        resolved_source = source if source is not None else "reference_profile"
+        diagnostics["input_kind"] = "anndata_reference"
+        diagnostics["source"] = resolved_source
 
     elif normalized_method in PYDESEQ2_MARKER_METHODS:
-        from .easydecon import compute_pseudobulk_deseq_markers
-
         raw_df, deseq_diagnostics = compute_pseudobulk_deseq_markers(
             adata,
             groupby=groupby,
@@ -986,15 +1457,21 @@ def prepare_markers(
         )
         diagnostics["generated_pseudobulk_deseq"] = True
         diagnostics["pseudobulk_deseq"] = deseq_diagnostics
-        source = "pydeseq2_pseudobulk"
+        resolved_source = source if source is not None else "pydeseq2_pseudobulk"
+        diagnostics["input_kind"] = "anndata_pydeseq2"
+        diagnostics["source"] = resolved_source
     else:
-        from .easydecon import _adata_has_rank_genes_groups
-        from .easydecon import _generate_scanpy_rank_genes_groups
-
         if _adata_has_rank_genes_groups(adata, marker_key):
             marker_adata = adata
-            source = f"adata.uns[{marker_key!r}]"
+            resolved_source = source if source is not None else f"adata.uns[{marker_key!r}]"
+            diagnostics["input_kind"] = "anndata_existing_scanpy"
         else:
+            if normalized_method == "existing":
+                raise ValueError(
+                    f"Could not read markers from adata.uns[{marker_key!r}]. Run "
+                    "sc.tl.rank_genes_groups first, set marker_method='scanpy' "
+                    "with groupby=..., or provide markers_df/filename."
+                )
             marker_adata = _generate_scanpy_rank_genes_groups(
                 adata,
                 groupby=groupby,
@@ -1007,7 +1484,8 @@ def prepare_markers(
                 rank_genes_groups_kwargs=rank_genes_groups_kwargs,
             )
             diagnostics["generated_rank_genes_groups"] = True
-            source = f"scanpy_generated[{marker_key!r}]"
+            resolved_source = source if source is not None else f"scanpy_generated[{marker_key!r}]"
+            diagnostics["input_kind"] = "anndata_generated_scanpy"
 
         try:
             raw_df = sc.get.rank_genes_groups_df(
@@ -1022,18 +1500,19 @@ def prepare_markers(
                 f"Could not read markers from adata.uns[{marker_key!r}]. "
                 "Run sc.tl.rank_genes_groups first or provide markers_df/filename."
             ) from exc
+        diagnostics["source"] = resolved_source
 
-    role_inference_diagnostics = None
     if marker_role_inference == "scanpy_signed":
         raw_df, role_inference_diagnostics = infer_scanpy_signed_marker_roles(
             raw_df,
-            log2fc_min=reference_min_log2fc if normalized_method in REFERENCE_MARKER_METHODS else 0.25,
+            schema=schema,
+            log2fc_min=marker_role_inference_log2fc_min,
         )
         diagnostics["marker_role_inference"] = {
             **role_inference_diagnostics,
             "requested": True,
             "applied": role_inference_diagnostics.get("inference_applied", False),
-            "input_source": source,
+            "input_source": resolved_source,
         }
         if (
             role_inference_diagnostics.get("inference_applied")
@@ -1047,6 +1526,7 @@ def prepare_markers(
 
     standardized = standardize_marker_dataframe(
         raw_df,
+        schema=schema,
         gene_universe=None,
         exclude_celltype=None,
         top_n_genes=None,
@@ -1058,14 +1538,23 @@ def prepare_markers(
         drop_mitochondrial=False,
         source=None,
     )
-    signature = make_marker_signature(
-        adata,
-        normalized_method,
-        normalized_parameters,
-    )
+    if table_signature:
+        table_content_hash = _marker_table_content_hash(standardized)
+        signature = make_marker_table_signature(
+            standardized,
+            normalized_method,
+            normalized_parameters,
+        )
+        diagnostics["table_content_hash"] = table_content_hash
+    else:
+        signature = make_marker_signature(
+            adata,
+            normalized_method,
+            normalized_parameters,
+        )
     diagnostics.update(
         {
-            "source": source,
+            "source": resolved_source,
             "n_raw_markers": int(standardized.shape[0]),
             "n_celltypes": int(standardized["group"].nunique()),
             "signature": signature,
@@ -1076,12 +1565,12 @@ def prepare_markers(
             standardized["marker_role"].value_counts().astype(int).to_dict()
         )
     if verbose:
-        print(f"Prepared markers from {source}.")
+        print(f"Prepared markers from {resolved_source}.")
 
     return PreparedMarkers(
         raw_markers_df=standardized,
         marker_method=normalized_method,
-        source=source,
+        source=resolved_source,
         parameters=normalized_parameters,
         diagnostics=diagnostics,
         signature=signature,
@@ -1100,6 +1589,7 @@ def select_prepared_markers(
     drop_ribosomal=False,
     drop_mitochondrial=False,
     source=None,
+    return_diagnostics=False,
 ) -> pd.DataFrame:
     """Select spatial-specific markers from a reusable marker preparation."""
     if not isinstance(prepared, PreparedMarkers):
@@ -1110,8 +1600,9 @@ def select_prepared_markers(
     if sort_by_column == "scores" and "scores" not in resolved_columns:
         effective_sort_column = None
 
-    return standardize_marker_dataframe(
-        prepared.raw_markers_df,
+    raw_df = prepared.raw_markers_df
+    selected = standardize_marker_dataframe(
+        raw_df,
         gene_universe=gene_universe,
         exclude_celltype=exclude_celltype,
         top_n_genes=top_n_genes,
@@ -1124,6 +1615,49 @@ def select_prepared_markers(
         source=prepared.source if source is None else source,
         copy=True,
     )
+    if not return_diagnostics:
+        return selected
+
+    raw_genes = (
+        raw_df["names"].astype(str)
+        if "names" in raw_df.columns
+        else pd.Series(dtype="object")
+    )
+    allowed_genes = {str(gene) for gene in gene_universe} if gene_universe is not None else None
+    selected_names = set(selected["names"].astype(str)) if "names" in selected else set()
+    diagnostics = {
+        "n_raw_markers": int(raw_df.shape[0]),
+        "n_selected_markers": int(selected.shape[0]),
+        "n_raw_groups": int(raw_df["group"].nunique()) if "group" in raw_df else None,
+        "n_selected_groups": int(selected["group"].nunique()) if "group" in selected else None,
+        "n_spatial_genes": int(len(gene_universe)) if gene_universe is not None else None,
+        "n_markers_removed_by_gene_universe": (
+            int((~raw_genes.isin(allowed_genes)).sum())
+            if allowed_genes is not None and not raw_genes.empty
+            else 0
+        ),
+        "n_markers_removed_total": int(raw_df.shape[0] - selected.shape[0]),
+        "marker_counts_per_group": (
+            selected.groupby(selected["group"], sort=False).size().astype(int).to_dict()
+            if "group" in selected
+            else {}
+        ),
+        "marker_role_counts": (
+            selected["marker_role"].value_counts().astype(int).to_dict()
+            if "marker_role" in selected
+            else {}
+        ),
+        "top_n_genes": top_n_genes,
+        "sort_by_column": effective_sort_column,
+        "ascending": bool(ascending),
+        "log2fc_min": float(log2fc_min),
+        "pval_cutoff": float(pval_cutoff),
+        "drop_ribosomal": bool(drop_ribosomal),
+        "drop_mitochondrial": bool(drop_mitochondrial),
+        "source": prepared.source if source is None else source,
+        "selected_genes": sorted(selected_names),
+    }
+    return selected, diagnostics
 
 
 def _top_n_per_group(df, top_n_genes):
@@ -1292,7 +1826,9 @@ def resolve_phase_marker_tables(
 __all__ = [
     "PreparedMarkers",
     "compute_reference_profile_markers",
+    "compute_pseudobulk_deseq_markers",
     "infer_scanpy_signed_marker_roles",
+    "make_marker_table_signature",
     "prepare_markers",
     "select_prepared_markers",
     "resolve_phase_marker_tables",
