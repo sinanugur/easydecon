@@ -45,7 +45,7 @@ prepared = ed.prepare_markers(
 result_a = ed.run_easydecon(
     spatial_a,
     prepared_markers=prepared,
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
     return_result_object=True,
     verbose=False,
 )
@@ -53,7 +53,7 @@ result_a = ed.run_easydecon(
 result_b = ed.run_easydecon(
     spatial_b,
     prepared_markers=prepared,
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
     return_result_object=True,
     verbose=False,
 )

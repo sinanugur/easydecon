@@ -96,6 +96,20 @@ prepared = ed.prepare_markers(
 reference profiles can be reused across spatial datasets with different gene
 universes.
 
+## Workflow example
+
+```python
+result = ed.run_easydecon(
+    sdata=sdata,
+    adata=sc_adata,
+    groupby="cell_type",
+    marker_method="reference",
+    filtering_algorithm="permutation",
+    method="wjaccard",
+    return_result_object=True,
+)
+```
+
 ## Comparison with other marker methods
 
 * Scanpy markers use `scanpy.tl.rank_genes_groups` and expect suitable

@@ -35,6 +35,7 @@ Start here
 
    phase1
    phase2
+   ucell
    results
 
 .. toctree::
@@ -50,7 +51,6 @@ Start here
    :maxdepth: 2
    :caption: Advanced workflows
 
-   ucell
    refinement
    candidate_pruning
    niches

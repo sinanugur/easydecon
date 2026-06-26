@@ -9,7 +9,6 @@ First run a parent workflow:
 parent = ed.run_easydecon(
     sdata,
     markers_df=broad_markers,
-    filtering_algorithm="quantile",
     return_result_object=True,
     verbose=False,
 )
@@ -37,6 +36,7 @@ refined = ed.refine_group(
     parent_group="Myeloid",
     markers_df=myeloid_subcluster_markers,
     mode="phase2",
+    method="wjaccard",
     parent_source="priors",
     parent_threshold=0.0,
 )
@@ -65,6 +65,8 @@ refined = ed.refine_group(
     mode="full",
     parent_source="priors",
     parent_threshold=0.0,
+    filtering_algorithm="permutation",
+    method="wjaccard",
     phase2_candidate_pruning=True,
 )
 ```
@@ -80,6 +82,26 @@ This mode:
 
 Full mode rejects list-style child `marker_genes` because it expects a child
 `posterior_df`.
+
+## Phase-specific refinement with UCell-like negative markers
+
+UCell-like scoring can be used for child refinement when the child marker table
+contains informative negative markers.
+
+```python
+refined = ed.refine_group(
+    sdata,
+    parent_result=parent,
+    parent_group="Myeloid",
+    markers_df=myeloid_role_markers,
+    mode="full",
+    marker_roles="phase_specific",
+    filtering_algorithm="permutation",
+    method="ucell",
+    parent_source="priors",
+    parent_threshold=0.0,
+)
+```
 
 ## Result fields
 

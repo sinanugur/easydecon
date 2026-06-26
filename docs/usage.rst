@@ -53,8 +53,6 @@ Minimal workflow
     result = ed.run_easydecon(
         sdata=sdata,
         markers_df=markers_df,
-        filtering_algorithm="quantile",
-        method="wjaccard",
         return_result_object=True,
         verbose=False,
     )
@@ -67,6 +65,27 @@ Minimal workflow
 groups, not guaranteed absolute biological cell fractions. ``assigned_labels``
 contains hard assignments and therefore discards uncertainty. Inspect
 ``diagnostics`` before relying on assignments downstream.
+
+``run_easydecon`` defaults to the standard Phase 1 permutation workflow and
+the default Phase 2 weighted Jaccard method.
+
+Fast exploratory run
+--------------------
+
+Quantile filtering is a fast exploratory shortcut. The standard Phase 1
+workflow uses permutation filtering, so final analyses should normally return
+to ``filtering_algorithm="permutation"``.
+
+.. code-block:: python
+
+    result = ed.run_easydecon(
+        sdata=sdata,
+        markers_df=markers_df,
+        filtering_algorithm="quantile",
+        method="wjaccard",
+        return_result_object=True,
+        verbose=False,
+    )
 
 Next steps
 ----------
@@ -86,8 +105,6 @@ five-value tuple::
     phase1_result, phase2_result, assigned_labels, priors_df, assignment_df = ed.run_easydecon(
         sdata=sdata,
         markers_df=markers_df,
-        filtering_algorithm="quantile",
-        method="wjaccard",
     )
 
 Set ``return_diagnostics=True`` to append the diagnostics dictionary to that

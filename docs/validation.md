@@ -37,11 +37,16 @@ runner can capture them, so inspect both metrics and metadata.
 
 ## Configurations
 
-Default configurations cover known oracle marker tables, reference-profile
-marker generation, shared versus phase-specific marker roles, UCell-like and
-weighted Jaccard Phase 2 scoring, and candidate-pruned versus unpruned runs.
-Known-marker configurations are labelled `marker_source="known"`; they isolate
-scoring behavior and should not be described as inferred markers.
+Default configurations should compare method families rather than frame a
+single scorer as the target. Representative Phase 2 methods include weighted
+Jaccard, cosine, AUC, and UCell-like scoring. Known-marker configurations are
+labelled `marker_source="known"`; they isolate scoring behavior and should not
+be described as inferred markers.
+
+Configuration tables should include a `phase2_method` column so weighted
+overlap, vector-profile, rank-based, and negative-marker-capable methods can
+be compared directly. Do not declare a winner without dataset-specific
+evidence.
 
 ## Metrics
 

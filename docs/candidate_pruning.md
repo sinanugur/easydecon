@@ -13,12 +13,16 @@ Candidate pruning is disabled by default and is controlled by
 result = ed.run_easydecon(
     sdata,
     markers_df=markers_df,
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
+    method="wjaccard",
     phase2_candidate_pruning=True,
     phase2_candidate_threshold=0.0,
     return_result_object=True,
 )
 ```
+
+Pruning works with all supported Phase 2 methods. Runtime gains depend on the
+method, data shape, and candidate sparsity.
 
 ## Zero-threshold pruning
 

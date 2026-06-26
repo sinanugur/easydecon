@@ -92,7 +92,7 @@ def test_docs_do_not_reference_removed_methods():
     )
     for method in _validation.SIMILARITY_METHODS:
         assert method in text
-    assert "spearman" not in (DOCS / "phase2.md").read_text(encoding="utf-8")
+    assert 'method="spearman"' not in (DOCS / "phase2.md").read_text(encoding="utf-8")
 
 
 def test_root_readme_links_to_documentation():

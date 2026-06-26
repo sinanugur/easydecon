@@ -1,9 +1,13 @@
 # Phase 1: marker-expression priors
 
+Permutation filtering is easydecon's standard Phase 1 method and the default
+used by `run_easydecon`.
+
 Phase 1 is implemented by `common_markers_gene_expression_and_filter`. It
-aggregates expression for marker genes at each spatial location, thresholds the
-aggregate signal, and produces the raw Phase 1 evidence matrix. The workflow
-clips this matrix at zero and row-normalizes it into `priors_df`.
+aggregates marker expression for each group at each spatial location, compares
+that evidence with the selected thresholding rule, and returns the raw Phase 1
+evidence matrix. The workflow clips this matrix at zero and row-normalizes it
+into `priors_df`.
 
 ## Marker representations
 
@@ -32,37 +36,106 @@ Supported values are defined in `AGGREGATION_METHODS`:
 | `median` | Median marker expression per spatial location. |
 | `cs` | Composite score via the package's `composite_score` helper. |
 
-## Filtering algorithms
+## Filtering method decision table
 
-Supported values are defined in `FILTERING_ALGORITHMS`:
+| Method | Recommended use | Main advantage | Main limitation |
+| --- | --- | --- | --- |
+| `permutation` | Standard analysis | Null-based marker evidence | Computational cost |
+| `quantile` | Fast exploration and debugging | Low computational cost | No random-gene null distribution |
+| `nb` | Raw-count specialized workflows | Count-aware thresholding | Raw counts and current modeling assumptions required |
 
-`quantile`
-: Computes a threshold from non-zero aggregate values for each group. This is
-  the fastest practical starting option for quick runs.
+## Permutation filtering
 
-`permutation`
-: Builds a null distribution by repeatedly sampling random genes from a
-  variable-gene pool. It can use an empirical threshold or a Gamma fit when
-  `parametric=True`. Runtime scales with `num_permutations`, `subsample_size`,
-  and `n_subs`.
+Use:
 
-`nb`
-: Uses raw counts from `table.layers["counts"]`, a global negative-binomial
-  approximation, and currently requires `aggregation_method="sum"`. It raises a
-  clear error if the counts layer is missing.
+```python
+filtering_algorithm="permutation"
+```
 
-## Output statistic
+Permutation filtering aggregates the observed marker set and builds a null
+distribution by repeatedly drawing random gene sets of the same size. The
+background pool is based on the most variable genes according to the current
+implementation. Retained evidence exceeds either the empirical null quantile
+or the fitted parametric null cutoff.
 
-`phase1_output_stat` in `run_easydecon` is passed as `output_stat`.
+Relevant parameters:
 
-`expression`
-: Keep thresholded expression or count values.
+`num_permutations`
+: Number of null draws across subsamples.
 
-`minus_log10_p`
-: Return `-log10(p)` values for significant locations and zero otherwise.
+`alpha`
+: Right-tail cutoff level for retained marker evidence.
 
-`output_stat="minus_log10_p"` is invalid with `filtering_algorithm="quantile"`.
-It is implemented for `permutation` and `nb`.
+`subsample_size`, `n_subs`
+: Number of spatial locations sampled for null construction and how that work
+  is split.
+
+`subsample_signal_quantile`
+: Drops the lowest and highest observed marker-expression locations before
+  subsampling null locations.
+
+`permutation_gene_pool_fraction`
+: Fraction of genes retained in the variable-gene background pool.
+
+`parametric`
+: When `True`, fits the implemented Gamma null distribution. When `False`,
+  uses the observed null quantile.
+
+`aggregation_method`
+: Aggregates expression for both observed and random marker sets.
+
+`phase1_output_stat`
+: Selects thresholded expression evidence or `-log10(p)` output.
+
+Runtime increases with marker groups, permutations, and sampled locations.
+Permutation filtering is the normal scientific workflow despite its greater
+cost. Do not treat its output as perfectly calibrated proof of cell-type
+presence; it is null-based marker evidence under the package's implemented
+assumptions.
+
+## Quantile filtering
+
+Use:
+
+```python
+filtering_algorithm="quantile"
+```
+
+Quantile filtering is a fast exploratory shortcut. The standard Phase 1
+workflow uses permutation filtering.
+
+Quantile filtering computes the cutoff among nonzero aggregated values for
+each marker group. It is deterministic, useful for smoke tests and low-cost
+debugging, and much faster than permutation filtering. It is less
+statistically grounded than the random-gene null and is sensitive to the
+observed expression distribution.
+
+`output_stat="minus_log10_p"` is invalid with quantile filtering because no
+null p-value is computed.
+
+## Negative-binomial filtering
+
+Use:
+
+```python
+filtering_algorithm="nb"
+```
+
+NB filtering is a specialized raw-count alternative. It requires:
+
+* raw non-negative counts in `table.layers["counts"]`; and
+* `aggregation_method="sum"`.
+
+For each marker group, the implementation computes observed marker-count sums,
+library-size scaled expected marker sums, and a global negative-binomial
+dispersion approximation controlled by `nb_global_theta`. With
+`phase1_output_stat="expression"`, locations whose observed sum exceeds the
+count-aware threshold retain the observed count sum. With
+`phase1_output_stat="minus_log10_p"`, significant locations retain
+`-log10(p)` and nonsignificant locations become zero.
+
+NB is not the default. It is useful only when raw counts and the current global
+dispersion assumptions are appropriate for the dataset.
 
 ## Priors and posterior gating
 
@@ -71,6 +144,5 @@ values to zero and row-normalizing. Rows with no Phase 1 evidence become all
 zero. When `prior_weight > 0`, a zero prior usually prevents a marker group
 from receiving posterior support.
 
-Phase 1 is marker-based evidence. It is not statistically calibrated proof of
-cell-type presence, and it depends strongly on marker quality and gene
-identifier overlap.
+Phase 1 is marker-based evidence. It depends strongly on marker quality, gene
+identifier overlap, spatial resolution, and the selected filtering algorithm.

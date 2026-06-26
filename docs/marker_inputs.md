@@ -42,6 +42,51 @@ Aliases `marker_method="deseq2"` and `"pseudobulk_deseq2"` normalize to
 `"pydeseq2"`. Alias `marker_method="rctd_like"` normalizes to `"reference"` for
 compatibility; examples use `"reference"`.
 
+## Generated-marker workflow examples
+
+Scanpy-generated markers:
+
+```python
+result = ed.run_easydecon(
+    sdata=sdata,
+    adata=sc_adata,
+    groupby="cell_type",
+    marker_method="scanpy",
+    filtering_algorithm="permutation",
+    method="wjaccard",
+    return_result_object=True,
+)
+```
+
+PyDESeq2 markers:
+
+```python
+result = ed.run_easydecon(
+    sdata=sdata,
+    adata=sc_adata,
+    groupby="cell_type",
+    sample_col="donor",
+    marker_method="pydeseq2",
+    filtering_algorithm="permutation",
+    method="wjaccard",
+    return_result_object=True,
+)
+```
+
+Reference-profile markers:
+
+```python
+result = ed.run_easydecon(
+    sdata=sdata,
+    adata=sc_adata,
+    groupby="cell_type",
+    marker_method="reference",
+    filtering_algorithm="permutation",
+    method="wjaccard",
+    return_result_object=True,
+)
+```
+
 ## Canonical columns
 
 Required after standardization:
@@ -116,7 +161,8 @@ treated as `positive`. Unknown roles raise an error.
 `marker_role_inference="scanpy_signed"` is implemented for Scanpy-style signed
 marker rows. It infers `positive` and `negative` roles from signed
 `logfoldchanges`, optionally checking finite score signs. It is opt-in and
-intended for `marker_roles="shared"`, especially with `method="ucell"`.
+intended for `marker_roles="shared"` when negative-marker-capable
+`method="ucell"` scoring is desired.
 
 Reference-profile marker generation can create `presence`, `identity`, and
 `negative` roles with `marker_roles="phase_specific"`. Scanpy and PyDESeq2 do

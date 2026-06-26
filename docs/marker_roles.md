@@ -3,21 +3,27 @@
 Marker roles let one marker table express different purposes for Phase 1 and
 Phase 2. The supported roles are:
 
-`positive`
-: A normal positive marker. Missing or blank roles become `positive`.
-
-`negative`
-: An anti-marker. Only UCell-like Phase 2 scoring interprets negative markers.
-
 `presence`
 : A Phase 1 marker used to detect whether a group is plausible.
 
 `identity`
 : A Phase 2 marker used to distinguish a group from others.
 
+`positive`
+: A normal positive marker. Missing or blank roles become `positive`.
+
+`negative`
+: An anti-marker. Only UCell-like Phase 2 scoring directionally interprets
+  negative markers.
+
 Unknown role values raise an error. Negative direction is determined by
 `marker_role`, not by the sign of `logfoldchanges`. Signed values remain signed
 when they come from signed Scanpy inference.
+
+Presence and identity roles are useful independently of UCell-like scoring.
+Non-UCell Phase 2 methods exclude negative rows rather than subtracting them.
+Shared and phase-specific routing are separate concepts from the selected
+Phase 2 scoring method.
 
 ## Routing modes
 
@@ -61,8 +67,8 @@ roles with Scanpy or PyDESeq2 markers.
 
 `marker_role_inference="scanpy_signed"` is a separate shared-mode feature for
 Scanpy-style signed rows. It creates only `positive` and `negative` roles and
-is useful with `method="ucell"`. It does not create phase-specific
-`presence`/`identity` roles.
+is useful when running the negative-marker-capable `method="ucell"`. It does
+not create phase-specific `presence`/`identity` roles.
 
 ## Top-N with roles
 

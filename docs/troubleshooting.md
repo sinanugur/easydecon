@@ -53,8 +53,9 @@ Likely cause: no marker signal passed Phase 1 filtering.
 
 Inspect: `result.phase1_result.sum(axis=1)` and marker overlap.
 
-Action: start with `filtering_algorithm="quantile"`, relax `quantile`, or
-check gene identifiers.
+Action: use `filtering_algorithm="quantile"` as a fast exploratory shortcut,
+relax `quantile`, or check gene identifiers. The standard Phase 1 workflow
+uses permutation filtering.
 
 ## UCell scores are all zero
 
@@ -156,8 +157,9 @@ groups.
 
 Inspect: Phase 1 progress bars and parameter values.
 
-Action: start with `filtering_algorithm="quantile"` for iteration, then use
-permutation selectively.
+Action: use `filtering_algorithm="quantile"` for iteration when you need a
+fast exploratory shortcut, then return to permutation filtering for standard
+analyses.
 
 ## Memory concerns
 

@@ -1,16 +1,19 @@
 # UCell-like Phase 2 scoring
 
+UCell-like scoring is one of several Phase 2 methods. Weighted Jaccard remains
+the default. See [Phase 2](phase2.md) for a comparison of all methods.
+
 `method="ucell"` scores each spatial location from ranks within that location.
 Highly expressed positive markers increase evidence for a group. Detected
 negative markers can subtract evidence. This is UCell-like scoring inside
 easydecon; it is not the official UCell implementation and should not be
-treated as a calibrated probability model.
+treated as a calibrated probability model or the general default.
 
 ```python
 result = ed.run_easydecon(
     sdata,
     markers_df=markers_df,
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
     method="ucell",
     min_markers=3,
     top_n_markers=50,
@@ -81,7 +84,7 @@ result = ed.run_easydecon(
     marker_role_inference="scanpy_signed",
     marker_roles="shared",
     method="ucell",
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
     return_result_object=True,
 )
 ```

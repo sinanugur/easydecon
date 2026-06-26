@@ -30,7 +30,8 @@ result = ed.run_easydecon(
     groupby="cell_type",
     marker_method="scanpy",
     scanpy_method="wilcoxon",
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
+    method="wjaccard",
     return_result_object=True,
     verbose=False,
 )
@@ -76,7 +77,7 @@ result = ed.run_easydecon(
     marker_role_inference="scanpy_signed",
     marker_roles="shared",
     method="ucell",
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
     return_result_object=True,
     verbose=False,
 )
@@ -119,8 +120,7 @@ prepared = ed.prepare_markers(
 result = ed.run_easydecon(
     sdata,
     prepared_markers=prepared,
-    method="ucell",
-    filtering_algorithm="quantile",
+    filtering_algorithm="permutation",
     return_result_object=True,
 )
 ```
