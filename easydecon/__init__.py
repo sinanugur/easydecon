@@ -16,6 +16,7 @@ from .easydecon import (
     compute_pseudobulk_deseq_markers,
     get_clusters_by_similarity_on_tissue,
     read_markers_dataframe,
+    add_df_to_spatialdata,
 )
 from .extra import EasyDeconResult, easydecon_workflow
 from .markers import (
@@ -40,6 +41,7 @@ __all__ = [
     "common_markers_gene_expression_and_filter",
     "get_clusters_by_similarity_on_tissue",
     "assign_clusters_from_df",
+    "add_df_to_spatialdata",
     "compute_pseudobulk_deseq_markers",
     "PreparedMarkers",
     "compute_reference_profile_markers",
