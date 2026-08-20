@@ -257,7 +257,8 @@ def easydecon_workflow(
     alpha: float = 0.01,                  # permutation cutoff level
     subsample_size: int = 25000,          # subsample size for permutation
     subsample_signal_quantile: float = 0,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
-    permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
+    permutation_gene_pool_fraction: float | str = "auto",  # variance-ranked null pool fraction or automatic size
+    random_state: int | None = 10,            # reproducible Phase 1 permutation sampling
     n_subs: int = 5,                      # permutation: number of subsamples
     quantile: float = 0.7,                # used only if filtering_algorithm="quantile"
     phase1_output_stat: str = "expression",  # NEW: {"expression","minus_log10_p"}
@@ -500,6 +501,7 @@ def easydecon_workflow(
     # -----------------------
     # Phase 1: Priors
     # -----------------------
+    phase1_performance = {}
     phase1_result = common_markers_gene_expression_and_filter(
         sdata=table,
         marker_genes=phase1_markers,
@@ -515,11 +517,13 @@ def easydecon_workflow(
         subsample_size=subsample_size,
         subsample_signal_quantile=subsample_signal_quantile,
         permutation_gene_pool_fraction=permutation_gene_pool_fraction,
+        random_state=random_state,
         n_subs=n_subs,
         quantile=quantile,
         parametric=parametric,
         output_stat=phase1_output_stat,
         verbose=verbose,
+        _diagnostics_out=phase1_performance,
     )
 
     if not isinstance(phase1_result, pd.DataFrame):
@@ -693,6 +697,16 @@ def easydecon_workflow(
         "marker_roles": {
             **marker_role_diagnostics,
             "phase1_marker_source": phase1_marker_source,
+        },
+        "phase1": {
+            "filtering_algorithm": filtering_algorithm,
+            "aggregation_method": aggregation_method,
+            "alpha": alpha,
+            "num_permutations": num_permutations,
+            "n_subs": n_subs,
+            "permutation_gene_pool_fraction": permutation_gene_pool_fraction,
+            "random_state": random_state,
+            "performance": phase1_performance,
         },
         "phase2": {
             "method": method,

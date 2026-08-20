@@ -54,6 +54,8 @@ Phase functions and assignment
 
 .. autofunction:: assign_clusters_from_df
 
+.. autofunction:: add_df_to_spatialdata
+
 Refinement
 ----------
 

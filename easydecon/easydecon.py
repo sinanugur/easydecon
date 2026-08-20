@@ -1,5 +1,6 @@
 import warnings
 from dataclasses import dataclass
+from numbers import Real
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import scanpy as sc
 import numpy as np
@@ -88,6 +89,155 @@ def sparse_var(matrix, axis=0):
     return sq_mean - mean_sq
 
 
+def _validate_permutation_gene_pool_fraction(value):
+    """Validate and normalize the Phase 1 permutation-pool setting."""
+    if value == "auto":
+        return value
+    if isinstance(value, str) or isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(
+            "permutation_gene_pool_fraction must be 'auto' or a numeric "
+            "value in (0, 1]."
+        )
+    if not np.isfinite(value) or value <= 0 or value > 1:
+        raise ValueError(
+            "permutation_gene_pool_fraction must be 'auto' or a numeric "
+            "value in (0, 1]."
+        )
+    return float(value)
+
+
+def _resolve_permutation_gene_pool_size(
+    n_eligible_genes,
+    marker_set_size,
+    permutation_gene_pool_fraction,
+    *,
+    pool_multiplier=30,
+    min_pool_size=1000,
+    min_fraction=0.15,
+    max_fraction=0.50,
+):
+    """Resolve a variance-ranked null-pool size and its effective fraction."""
+    setting = _validate_permutation_gene_pool_fraction(
+        permutation_gene_pool_fraction
+    )
+    n_eligible_genes = int(n_eligible_genes)
+    marker_set_size = int(marker_set_size)
+    if n_eligible_genes < 0:
+        raise ValueError("n_eligible_genes must be greater than or equal to 0.")
+    if marker_set_size < 0:
+        raise ValueError("marker_set_size must be greater than or equal to 0.")
+
+    if n_eligible_genes == 0:
+        return {
+            "mode": "auto" if setting == "auto" else "numeric",
+            "pool_size": 0,
+            "effective_fraction": 0.0,
+        }
+
+    if setting == "auto":
+        min_size_from_fraction = int(np.ceil(min_fraction * n_eligible_genes))
+        max_size_from_fraction = int(np.ceil(max_fraction * n_eligible_genes))
+        pool_size = max(
+            int(min_pool_size),
+            int(pool_multiplier * marker_set_size),
+            min_size_from_fraction,
+        )
+        pool_size = min(
+            pool_size,
+            max_size_from_fraction,
+            n_eligible_genes,
+        )
+        mode = "auto"
+    else:
+        pool_size = max(1, int(setting * n_eligible_genes))
+        pool_size = min(pool_size, n_eligible_genes)
+        mode = "numeric"
+
+    # Avoid replacement merely because the requested fraction was smaller than
+    # the marker set. Replacement remains the fallback when the whole eligible
+    # universe is smaller than the marker set.
+    if n_eligible_genes >= marker_set_size:
+        pool_size = max(pool_size, marker_set_size)
+    pool_size = min(pool_size, n_eligible_genes)
+
+    return {
+        "mode": mode,
+        "pool_size": int(pool_size),
+        "effective_fraction": float(pool_size / n_eligible_genes),
+    }
+
+
+def _get_detected_gene_mask(matrix):
+    """Return a sparse-safe mask for genes detected in at least one location."""
+    if issparse(matrix):
+        detection_counts = np.asarray(matrix.getnnz(axis=0)).ravel()
+    else:
+        detection_counts = np.count_nonzero(np.asarray(matrix), axis=0)
+    return np.asarray(detection_counts).ravel() > 0
+
+
+def _build_permutation_gene_pool(
+    var_names,
+    gene_variability,
+    detected_gene_mask,
+    marker_genes,
+    permutation_gene_pool_fraction,
+    *,
+    group_name=None,
+):
+    """Build one group's detected, finite-variance, marker-excluded pool."""
+    var_names = pd.Index(var_names)
+    variability = np.asarray(gene_variability, dtype=float).ravel()
+    detected_gene_mask = np.asarray(detected_gene_mask, dtype=bool).ravel()
+    if len(var_names) != len(variability) or len(var_names) != len(detected_gene_mask):
+        raise ValueError(
+            "var_names, gene_variability, and detected_gene_mask must have "
+            "the same length."
+        )
+
+    finite_variance_mask = np.isfinite(variability)
+    target_marker_mask = np.asarray(var_names.isin(marker_genes), dtype=bool)
+    eligible_mask = detected_gene_mask & finite_variance_mask & ~target_marker_mask
+    eligible_positions = np.flatnonzero(eligible_mask)
+    n_eligible_genes = int(len(eligible_positions))
+    if n_eligible_genes == 0:
+        group_text = f" for group {group_name!r}" if group_name is not None else ""
+        raise ValueError(
+            "No usable null genes remain"
+            f"{group_text} after excluding undetected genes, non-finite "
+            "variance genes, and the group's own marker genes."
+        )
+
+    pool_info = _resolve_permutation_gene_pool_size(
+        n_eligible_genes,
+        len(marker_genes),
+        permutation_gene_pool_fraction,
+    )
+    eligible_variability = variability[eligible_positions]
+    variance_order = np.argsort(eligible_variability, kind="stable")
+    selected_positions = eligible_positions[
+        variance_order[-pool_info["pool_size"] :]
+    ]
+    gene_pool = var_names.to_numpy()[selected_positions]
+    pool_info.update(
+        {
+            "n_detected_genes": int(detected_gene_mask.sum()),
+            "n_finite_variance_genes": int(finite_variance_mask.sum()),
+            "n_eligible_null_genes": n_eligible_genes,
+        }
+    )
+    return gene_pool, pool_info
+
+
+def _sample_permutation_genes(rng, gene_pool, marker_set_size):
+    """Draw one null marker set while advancing the supplied RNG."""
+    return rng.choice(
+        gene_pool,
+        size=marker_set_size,
+        replace=len(gene_pool) < marker_set_size,
+    )
+
+
 def common_markers_gene_expression_and_filter(
     sdata: object,
     marker_genes,  # can be list, dict, or DataFrame
@@ -103,12 +253,14 @@ def common_markers_gene_expression_and_filter(
     alpha: float = 0.01, #significance level for the permutation-based cutoff
     subsample_size: int = 25000, #permutation param
     subsample_signal_quantile: float = 0.1, #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
-    permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
+    permutation_gene_pool_fraction: float | str = "auto",
     parametric: bool = True, #if parametric, gamma or exponential distribution is used
     n_subs: int = 5,                 # number of subsamples
     quantile: float = 0.7, #if quantile selected,
     output_stat: str = "expression",  # NEW: {"expression", "minus_log10_p"}
     verbose: bool = True,
+    random_state: int | None = 10,
+    _diagnostics_out=None,
     **kwargs
 ) -> pd.DataFrame:
     """Compute Phase 1 marker-expression evidence.
@@ -137,6 +289,15 @@ def common_markers_gene_expression_and_filter(
         Whether to merge Phase 1 columns into ``table.obs``.
     filtering_algorithm
         One of ``"permutation"``, ``"quantile"``, or ``"nb"``.
+    permutation_gene_pool_fraction
+        Controls the high-variance background pool used by permutation null
+        sampling. A numeric value in ``(0, 1]`` selects that fraction of
+        eligible genes. ``"auto"`` chooses a variance-ranked pool size from
+        the marker-set size and available spatial gene universe. Undetected
+        genes and the current group's own markers are excluded.
+    random_state
+        Seed for reproducible Phase 1 spot and null-gene sampling. ``None``
+        requests non-deterministic sampling.
     output_stat
         ``"expression"`` or ``"minus_log10_p"``. The latter is invalid with
         quantile filtering.
@@ -167,17 +328,24 @@ def common_markers_gene_expression_and_filter(
         inclusive_max=False,
         _maximum=0.5,
     )
-    validate_probability_range(
-        permutation_gene_pool_fraction,
-        "permutation_gene_pool_fraction",
-        inclusive_min=False,
-        inclusive_max=True,
+    permutation_gene_pool_fraction = _validate_permutation_gene_pool_fraction(
+        permutation_gene_pool_fraction
     )
     if n_subs < 1:
         raise ValueError("n_subs must be at least 1.")
 
     exclude_group_names = exclude_group_names or []
     table = get_table(sdata, bin_size=bin_size)
+
+    phase1_diagnostics = {
+        "filtering_algorithm": filtering_algorithm,
+        "random_state": random_state,
+        "groups": {},
+    }
+    if _diagnostics_out is not None:
+        if not isinstance(_diagnostics_out, dict):
+            raise TypeError("_diagnostics_out must be a dict when provided.")
+        _diagnostics_out.update(phase1_diagnostics)
 
     # -----------------------------------------------------------
     # 0) Convert marker_genes input to a dictionary: group -> list of genes
@@ -221,9 +389,13 @@ def common_markers_gene_expression_and_filter(
             "marker_genes must be a list, dict, or DataFrame with the appropriate columns."
         )
 
-    gene_variability = sparse_var(table.X,axis=0)
-    gene_pool_size = max(1, int(permutation_gene_pool_fraction * len(table.var_names)))
-    gene_pool = table.var_names[np.argsort(gene_variability)[-gene_pool_size:]]
+    gene_variability = None
+    detected_gene_mask = None
+    rng = None
+    if filtering_algorithm == "permutation":
+        gene_variability = sparse_var(table.X, axis=0)
+        detected_gene_mask = _get_detected_gene_mask(table.X)
+        rng = np.random.default_rng(random_state)
 
     # 2) Exclude spots
     spots_to_be_used = table.obs.index
@@ -247,9 +419,6 @@ def common_markers_gene_expression_and_filter(
 
     
 
-    shape_hat = loc_hat = scale_hat = None
-    nonzero_null_vals = None
-
     # Prepare a final DataFrame to collect group results
     result_df = pd.DataFrame(index=spots_to_be_used)
 
@@ -270,14 +439,34 @@ def common_markers_gene_expression_and_filter(
     # -----------------------------------------------------------
     for group_name, gene_list in group_dict.items():
         # Intersect gene_list with table.var_names
-        filtered_genes = set(gene_list).intersection(table.var_names)
-        filtered_genes = list(filtered_genes)
+        requested_genes = set(gene_list)
+        filtered_genes = [
+            gene for gene in table.var_names if gene in requested_genes
+        ]
+        group_diagnostics = {
+            "marker_set_size": int(len(filtered_genes)),
+            "n_total_genes": int(len(table.var_names)),
+        }
+        phase1_diagnostics["groups"][group_name] = group_diagnostics
         if not filtered_genes:
             if verbose:
                 print(f"Warning: No valid marker genes found for group '{group_name}'.")
             # We'll create a column of all zeros
             result_df[group_name] = 0
+            group_diagnostics.update(
+                {
+                    "status": "no_valid_markers",
+                    "positive_spot_count": 0,
+                    "positive_spot_fraction": 0.0,
+                }
+            )
+            if detected_gene_mask is not None:
+                group_diagnostics["n_detected_genes"] = int(
+                    detected_gene_mask.sum()
+                )
             continue
+        shape_hat = loc_hat = scale_hat = None
+        nonzero_null_vals = None
         var_mask = table.var_names.isin(filtered_genes)
         # Retrieve expression for the selected spots & genes
         #expr_matrix = table[spots_to_be_used, filtered_genes].to_df()
@@ -297,24 +486,59 @@ def common_markers_gene_expression_and_filter(
             threshold = non_zero_vals.quantile(quantile)
 
         elif filtering_algorithm == "permutation":
+            marker_set_size = len(filtered_genes)
+            gene_pool, pool_info = _build_permutation_gene_pool(
+                table.var_names,
+                gene_variability,
+                detected_gene_mask,
+                filtered_genes,
+                permutation_gene_pool_fraction,
+                group_name=group_name,
+            )
+            group_diagnostics.update(
+                {
+                    "n_detected_genes": pool_info["n_detected_genes"],
+                    "n_eligible_null_genes": pool_info[
+                        "n_eligible_null_genes"
+                    ],
+                    "gene_pool_mode": pool_info["mode"],
+                    "requested_gene_pool_fraction": permutation_gene_pool_fraction,
+                    "effective_gene_pool_fraction": pool_info[
+                        "effective_fraction"
+                    ],
+                    "gene_pool_size": pool_info["pool_size"],
+                    "num_permutations": int(num_permutations),
+                    "n_subs": int(n_subs),
+                    "sampling_with_replacement": bool(
+                        len(gene_pool) < marker_set_size
+                    ),
+                    "parametric": bool(parametric),
+                }
+            )
 
             marker_expr = table[:, filtered_genes].to_df().agg(aggregator, axis=1)
             signal_low, signal_high = marker_expr.quantile([subsample_signal_quantile, 1-subsample_signal_quantile])
             candidate_spots = marker_expr[(marker_expr >= signal_low) & (marker_expr <= signal_high)].index
+            group_diagnostics["candidate_spot_count"] = int(len(candidate_spots))
 
             if len(candidate_spots) == 0:
                 # Edge case: if everything was below cutoff
                 if verbose:
                     print(f"Warning: no bins passed the total_counts quantile filter for {group_name}.")
                 threshold = 0
+                group_diagnostics.update(
+                    {
+                        "status": "no_candidate_spots",
+                        "null_score_count": 0,
+                        "nonzero_null_score_count": 0,
+                    }
+                )
             else:
                 all_null_scores = []
-                marker_set_size = len(filtered_genes)
 
                 # Determine each subset size
                 subset_size_each = subsample_size // n_subs
                 remainder = subsample_size % n_subs  # if not divisible
-                np.random.seed(10)
                 # n_subs loops
                 for i in range(n_subs):
                     # For remainder distribution, you can let the first few subsets be bigger or smaller
@@ -323,14 +547,16 @@ def common_markers_gene_expression_and_filter(
                         current_subset_size += 1
                         remainder -= 1
                     if len(candidate_spots) > current_subset_size:
-                        
-                        subset_spots = np.random.choice(candidate_spots, size=current_subset_size, replace=False)
+                        subset_spots = rng.choice(
+                            candidate_spots,
+                            size=current_subset_size,
+                            replace=False,
+                        )
                     else:
                         subset_spots = candidate_spots
 
                     # Build null distribution for this subset
                     all_expr_df = table[subset_spots, :].to_df()
-                    np.random.seed(10)
                     for _ in tqdm(
                         range(int(num_permutations/n_subs)),
                         #desc=f"Perm sub {i+1}/{n_subs} of {current_subset_size} for {group_name}",
@@ -339,10 +565,10 @@ def common_markers_gene_expression_and_filter(
                         position=0,
                         disable=not verbose,
                     ):
-                        random_genes = np.random.choice(
+                        random_genes = _sample_permutation_genes(
+                            rng,
                             gene_pool,
-                            size=marker_set_size,
-                            replace=len(gene_pool) < marker_set_size,
+                            marker_set_size,
                         )
 
                         if isinstance(aggregator, str):
@@ -351,18 +577,55 @@ def common_markers_gene_expression_and_filter(
                             random_vals = all_expr_df[random_genes].apply(aggregator, axis=1)
                         all_null_scores.append(random_vals.values)
                 # Concatenate results
-                null_scores_concat = np.concatenate(all_null_scores)
-                nonzero_null_vals = null_scores_concat[null_scores_concat > 0]
+                null_scores_concat = (
+                    np.concatenate(all_null_scores)
+                    if all_null_scores
+                    else np.asarray([], dtype=float)
+                )
+                finite_null_vals = null_scores_concat[
+                    np.isfinite(null_scores_concat)
+                ]
+                nonzero_null_vals = finite_null_vals[finite_null_vals > 0]
+                group_diagnostics.update(
+                    {
+                        "null_score_count": int(len(null_scores_concat)),
+                        "nonzero_null_score_count": int(len(nonzero_null_vals)),
+                        "null_median": (
+                            float(np.median(finite_null_vals))
+                            if len(finite_null_vals)
+                            else None
+                        ),
+                        "null_q95": (
+                            float(np.quantile(finite_null_vals, 0.95))
+                            if len(finite_null_vals)
+                            else None
+                        ),
+                        "null_q99": (
+                            float(np.quantile(finite_null_vals, 0.99))
+                            if len(finite_null_vals)
+                            else None
+                        ),
+                    }
+                )
                 if len(nonzero_null_vals) == 0:
                     if verbose:
                         print("Warning: no positive values in null distribution, threshold set to 0.")
                     threshold = 0
+                    group_diagnostics["status"] = "no_positive_null_scores"
                 else:
                     if not parametric:
                         threshold = np.quantile(nonzero_null_vals, 1 - alpha)
                     else:
                         shape_hat, loc_hat, scale_hat = gamma.fit(nonzero_null_vals,floc=0)
                         threshold = gamma.ppf(1 - alpha, shape_hat, loc=loc_hat, scale=scale_hat)
+                        group_diagnostics.update(
+                            {
+                                "gamma_shape": float(shape_hat),
+                                "gamma_scale": float(scale_hat),
+                            }
+                        )
+                    group_diagnostics["status"] = "ok"
+            group_diagnostics["threshold"] = float(threshold)
 
         elif filtering_algorithm == "nb":
             if "counts" not in table.layers:
@@ -443,7 +706,13 @@ def common_markers_gene_expression_and_filter(
                 vals = group_expression[group_name].values
 
                 # p-values: P(null >= observed)
-                if parametric:
+                if (
+                    filtering_algorithm == "permutation"
+                    and (nonzero_null_vals is None or len(nonzero_null_vals) == 0)
+                ):
+                    result_df[group_name] = 0.0
+                    pvals = None
+                elif parametric:
                     pvals = gamma.sf(vals, shape_hat, loc=loc_hat, scale=scale_hat)
                 else:
                     # empirical right-tail p-value
@@ -453,20 +722,40 @@ def common_markers_gene_expression_and_filter(
                     idx = np.searchsorted(sorted_null, vals, side="left")
                     pvals = (M - idx) / float(M)
 
-                # Clip to avoid log(0)
-                pvals_clipped = np.clip(pvals, 1e-300, 1.0)
-                minus_log10_p = -np.log10(pvals_clipped)
+                if pvals is not None:
+                    # Clip to avoid log(0)
+                    pvals_clipped = np.clip(pvals, 1e-300, 1.0)
+                    minus_log10_p = -np.log10(pvals_clipped)
 
-                # Zero out non-significant entries (p > alpha)
-                minus_log10_p[pvals > alpha] = 0.0
+                    # Zero out non-significant entries (p > alpha)
+                    minus_log10_p[pvals > alpha] = 0.0
 
-                result_df[group_name] = pd.Series(
-                    minus_log10_p,
-                    index=group_expression.index,
-                ).fillna(0.0)
+                    result_df[group_name] = pd.Series(
+                        minus_log10_p,
+                        index=group_expression.index,
+                    ).fillna(0.0)
 
             else:
                 raise ValueError(f"Unsupported output_stat: {output_stat}")
+
+        if filtering_algorithm == "quantile":
+            group_diagnostics.update(
+                {
+                    "status": "ok",
+                    "threshold": float(threshold),
+                }
+            )
+        positive_spot_count = int((result_df[group_name] > 0).sum())
+        group_diagnostics.update(
+            {
+                "positive_spot_count": positive_spot_count,
+                "positive_spot_fraction": (
+                    float(positive_spot_count / len(result_df))
+                    if len(result_df)
+                    else 0.0
+                ),
+            }
+        )
 
     # -----------------------------------------------------------
     # Merge results back into obs if requested

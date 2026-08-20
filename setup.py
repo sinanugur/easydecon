@@ -20,7 +20,7 @@ with open("README.md","r") as readme:
 
 setup(
     name="easydecon",
-    version="0.1.6a",
+    version="0.1.7a",
     packages=find_packages(exclude=('tests*','testing*')),
     scripts=["easydecon/expression_statistics.py"],
     long_description=long_description,

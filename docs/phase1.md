@@ -75,7 +75,17 @@ Relevant parameters:
   subsampling null locations.
 
 `permutation_gene_pool_fraction`
-: Fraction of genes retained in the variable-gene background pool.
+: Controls the high-variance background gene pool used for permutation null
+  sampling. A numeric value in `(0, 1]` selects that fraction of eligible
+  genes. `"auto"` (the default) chooses a pool size using the marker-set size
+  and the available spatial gene universe. The target group's own marker genes
+  and genes with no spatial detection are excluded from its pool. Automatic
+  selection remains variance-based; it does not expression-match control
+  genes.
+
+`random_state`
+: Controls reproducible Phase 1 spot subsampling and random-gene draws. The
+  default is `10`; use `None` for non-deterministic sampling.
 
 `parametric`
 : When `True`, fits the implemented Gamma null distribution. When `False`,
