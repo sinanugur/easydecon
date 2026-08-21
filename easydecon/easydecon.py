@@ -111,7 +111,7 @@ def _resolve_permutation_gene_pool_size(
     marker_set_size,
     permutation_gene_pool_fraction,
     *,
-    pool_multiplier=30,
+    pool_multiplier=50,
     min_pool_size=1000,
     min_fraction=0.15,
     max_fraction=0.50,
