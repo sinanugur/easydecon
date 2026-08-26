@@ -111,9 +111,9 @@ def _resolve_permutation_gene_pool_size(
     marker_set_size,
     permutation_gene_pool_fraction,
     *,
-    pool_multiplier=50,
-    min_pool_size=1000,
-    min_fraction=0.15,
+    pool_multiplier=20,
+    min_pool_size=500,
+    min_fraction=0.05,
     max_fraction=0.50,
 ):
     """Resolve a variance-ranked null-pool size and its effective fraction."""
