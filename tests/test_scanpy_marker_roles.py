@@ -11,6 +11,7 @@ from easydecon._schema import standardize_marker_dataframe
 from easydecon.config import config
 from easydecon.markers import (
     PreparedMarkers,
+    infer_signed_marker_roles,
     infer_scanpy_signed_marker_roles,
     prepare_markers,
     resolve_phase_marker_tables,
@@ -61,6 +62,15 @@ def test_signed_role_inference_positive_and_negative_preserves_signs():
     assert diagnostics["n_negative_inferred"] == 2
 
 
+def test_signed_mode_and_scanpy_signed_alias_are_equivalent():
+    signed, signed_diagnostics = infer_signed_marker_roles(_signed_markers())
+    alias, alias_diagnostics = infer_scanpy_signed_marker_roles(_signed_markers())
+
+    pd.testing.assert_frame_equal(signed, alias)
+    assert signed_diagnostics["mode"] == "signed"
+    assert alias_diagnostics["mode"] == "signed"
+
+
 def test_missing_score_uses_foldchange_direction():
     markers = _signed_markers().drop(columns="scores")
 
@@ -89,7 +99,7 @@ def test_score_sign_disagreement_zero_score_zero_foldchange_small_effect_and_non
 
 
 def test_missing_logfoldchanges_raises():
-    with pytest.raises(ValueError, match="requires a signed logfoldchanges column"):
+    with pytest.raises(ValueError, match="requires a signed log-fold-change column"):
         infer_scanpy_signed_marker_roles(
             pd.DataFrame({"group": ["A"], "names": ["G1"], "scores": [1.0]})
         )
@@ -250,30 +260,20 @@ def test_existing_scanpy_anndata_inference(monkeypatch):
     assert set(result["marker_role"]) == {"positive", "negative"}
 
 
-def test_reference_and_pydeseq_generation_reject_scanpy_inference(monkeypatch):
+def test_reference_generation_rejects_signed_inference(monkeypatch):
     adata = ad.AnnData(
         X=np.ones((4, 4)),
         obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"], "sample": ["s1", "s2", "s1", "s2"]}),
         var=pd.DataFrame(index=["G1", "G2", "G3", "G4"]),
     )
 
-    with pytest.raises(ValueError, match="intended for Scanpy-style"):
+    with pytest.raises(ValueError, match="Reference-profile marker generation"):
         edmod.read_markers_dataframe(
             _spatial_table(),
             adata=adata,
             marker_method="reference",
-            marker_role_inference="scanpy_signed",
+            marker_role_inference="signed",
             groupby="cell_type",
-            verbose=False,
-        )
-    with pytest.raises(ValueError, match="intended for Scanpy-style"):
-        edmod.read_markers_dataframe(
-            _spatial_table(),
-            adata=adata,
-            marker_method="pydeseq2",
-            marker_role_inference="scanpy_signed",
-            groupby="cell_type",
-            sample_col="sample",
             verbose=False,
         )
 

@@ -36,7 +36,7 @@ reused across multiple spatial datasets.
 
 `prepare_markers`
 : Source loading, marker generation, alias resolution, canonicalization, and
-  optional signed Scanpy role inference. It accepts AnnData, marker DataFrames,
+  optional signed role inference for Scanpy and DE-style tables. It accepts AnnData, marker DataFrames,
   marker files, or existing `PreparedMarkers` objects. It does not filter to a
   spatial gene universe.
 
@@ -122,5 +122,5 @@ changes:
 * the intended marker method.
 
 `PreparedMarkers` does not mutate the single-cell AnnData object. If you use
-`marker_role_inference="scanpy_signed"`, recreate the preparation when you want
+`marker_role_inference="signed"`, recreate the preparation when you want
 those inferred roles stored for later reuse.

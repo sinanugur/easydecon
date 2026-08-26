@@ -187,7 +187,11 @@ def refine_group(
     verbose=True,
     **workflow_kwargs,
 ) -> RefinedGroupResult:
-    """Refine one broad parent group into marker-defined subclusters."""
+    """Refine one broad parent group into marker-defined subclusters.
+
+    ``marker_role_inference`` accepts ``"none"``, ``"signed"`` for signed
+    Scanpy/DE-style marker tables, and legacy ``"scanpy_signed"``.
+    """
     validate_choice(mode, REFINEMENT_MODES, "mode")
     validate_choice(parent_source, PARENT_SOURCES, "parent_source")
     validate_choice(evidence_to_likelihood, {"row_normalize", "softmax"}, "evidence_to_likelihood")

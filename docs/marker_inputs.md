@@ -184,16 +184,17 @@ role routing. With marker roles, the limit is per group and role.
 `top_n_markers` is separate. It limits markers inside selected Phase 2 scoring
 methods such as AUC and UCell-like scoring, after marker-table routing.
 
-## Marker roles and signed Scanpy inference
+## Marker roles and signed inference
 
 Manual marker tables may include `marker_role`. Missing or blank roles are
 treated as `positive`. Unknown roles raise an error.
 
-`marker_role_inference="scanpy_signed"` is implemented for Scanpy-style signed
+`marker_role_inference="signed"` works with signed Scanpy, DESeq, and PyDESeq2
 marker rows. It infers `positive` and `negative` roles from signed
-`logfoldchanges`, optionally checking finite score signs. It is opt-in and
-intended for `marker_roles="shared"` when negative-marker-capable
-`method="ucell"` scoring is desired.
+`logfoldchanges`, optionally checking finite directional Scanpy scores or
+DESeq statistics. It is opt-in and intended for `marker_roles="shared"` when
+negative-marker-capable `method="ucell"` scoring is desired.
+`"scanpy_signed"` remains a backward-compatible alias.
 
 Reference-profile marker generation can create `presence`, `identity`, and
 `negative` roles with `marker_roles="phase_specific"`. Scanpy and PyDESeq2 do

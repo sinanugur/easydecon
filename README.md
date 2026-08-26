@@ -52,6 +52,18 @@ print(result.assigned_labels.head())
 print(result.diagnostics)
 ```
 
+### Signed differential-expression marker roles
+
+For signed Scanpy, DESeq, or PyDESeq2 marker results, opt into
+`marker_role_inference="signed"` with `marker_roles="shared"`. Positive log
+fold changes become `positive` markers and negative log fold changes become
+`negative` markers. Signed Scanpy scores and DESeq-style Wald statistics are
+used only as optional direction-consistency checks; fold-change direction is
+authoritative. Signed inference creates only positive and negative roles.
+
+`marker_role_inference="scanpy_signed"` remains accepted as a backward-
+compatible alias, but new code should use `"signed"`.
+
 `posterior_df` contains relative support among tested marker groups, not
 guaranteed absolute cell fractions. Hard assignments discard uncertainty.
 

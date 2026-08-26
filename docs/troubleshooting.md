@@ -75,7 +75,7 @@ inference was not requested.
 Inspect: `result.markers_df["marker_role"].value_counts()`.
 
 Action: provide manual negative markers, use reference phase-specific markers,
-or opt into `marker_role_inference="scanpy_signed"` for Scanpy-style markers.
+or opt into `marker_role_inference="signed"` for signed DE-style markers.
 
 ## Reference marker generation returns no markers
 

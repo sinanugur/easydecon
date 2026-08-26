@@ -65,10 +65,12 @@ Scanpy and PyDESeq2 do not automatically generate phase-specific
 presence/identity roles. Provide a manual `marker_role` table if you need those
 roles with Scanpy or PyDESeq2 markers.
 
-`marker_role_inference="scanpy_signed"` is a separate shared-mode feature for
-Scanpy-style signed rows. It creates only `positive` and `negative` roles and
-is useful when running the negative-marker-capable `method="ucell"`. It does
-not create phase-specific `presence`/`identity` roles.
+`marker_role_inference="signed"` is a shared-mode feature for signed Scanpy,
+DESeq, and PyDESeq2 rows. It creates only `positive` and `negative` roles and
+is useful when running the negative-marker-capable `method="ucell"`. Fold
+change direction is authoritative; signed Scanpy scores or DESeq statistics
+are optional concordance checks. It does not create phase-specific
+`presence`/`identity` roles. `"scanpy_signed"` remains a compatibility alias.
 
 ## Top-N with roles
 

@@ -64,7 +64,7 @@ does not perform reference preprocessing for you.
 
 ## Signed Scanpy markers for UCell
 
-`marker_role_inference="scanpy_signed"` is implemented and opt-in. It is useful
+`marker_role_inference="signed"` is implemented and opt-in. It is useful
 when Scanpy results contain signed `logfoldchanges` and you want UCell-like
 Phase 2 scoring to use both positive markers and anti-markers.
 
@@ -74,7 +74,7 @@ result = ed.run_easydecon(
     adata=sc_adata,
     groupby="cell_type",
     marker_method="scanpy",
-    marker_role_inference="scanpy_signed",
+    marker_role_inference="signed",
     marker_roles="shared",
     method="ucell",
     filtering_algorithm="permutation",
@@ -113,7 +113,7 @@ prepared = ed.prepare_markers(
     sc_adata,
     marker_method="scanpy",
     groupby="cell_type",
-    marker_role_inference="scanpy_signed",
+    marker_role_inference="signed",
     verbose=False,
 )
 

@@ -249,7 +249,9 @@ def summarize_easydecon_result(
         markers_summary["marker_role_inference"] = {
             key: inference.get(key)
             for key in (
+                "requested_mode",
                 "mode",
+                "normalized_mode",
                 "applied",
                 "n_positive_inferred",
                 "n_negative_inferred",

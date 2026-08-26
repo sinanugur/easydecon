@@ -126,13 +126,64 @@ def _validate_bool(value, name):
     return value
 
 
-def infer_scanpy_signed_marker_roles(
+def _normalize_marker_role_inference(value: str) -> str:
+    """Normalize the preferred signed-inference mode and its legacy alias."""
+    validate_choice(value, MARKER_ROLE_INFERENCE_MODES, "marker_role_inference")
+    return "signed" if value == "scanpy_signed" else value
+
+
+def _find_column_case_insensitive(markers_df, *candidates):
+    folded = {str(column).casefold(): column for column in markers_df.columns}
+    for candidate in candidates:
+        column = folded.get(str(candidate).casefold())
+        if column is not None:
+            return column
+    return None
+
+
+def _resolve_directional_score_column(
+    markers_df,
+    *,
+    source_kind=None,
+    marker_method=None,
+    schema=None,
+):
+    """Return a score whose sign is meaningful for direction concordance.
+
+    Fold change remains authoritative. This only identifies optional signed
+    statistics and deliberately excludes magnitude-only fields such as
+    ``baseMean`` and generated PyDESeq2's historical absolute ``scores``.
+    """
+    if not isinstance(markers_df, pd.DataFrame):
+        raise TypeError("markers_df must be a pandas DataFrame.")
+
+    source_kind = str(source_kind or "").casefold()
+    normalized_method = (
+        _normalize_marker_method(marker_method)
+        if marker_method is not None
+        else None
+    )
+    if source_kind in {"anndata_existing_scanpy", "anndata_generated_scanpy"}:
+        return _find_column_case_insensitive(markers_df, "scores")
+    if source_kind == "anndata_pydeseq2" or normalized_method == "pydeseq2":
+        return _find_column_case_insensitive(
+            markers_df, "stat", "wald_stat", "statistics"
+        )
+
+    return _find_column_case_insensitive(
+        markers_df, "stat", "wald_stat", "statistics", "scores", "score"
+    )
+
+
+def infer_signed_marker_roles(
     markers_df,
     *,
     schema=None,
     log2fc_min=0.25,
+    source_kind=None,
+    marker_method=None,
 ) -> tuple[pd.DataFrame, dict]:
-    """Infer positive/negative roles from signed Scanpy-style marker rows."""
+    """Infer positive/negative marker roles from a signed DE-style table."""
     if not isinstance(markers_df, pd.DataFrame):
         raise TypeError("markers_df must be a pandas DataFrame.")
     log2fc_min = _validate_reference_float_nonnegative(log2fc_min, "log2fc_min")
@@ -145,9 +196,12 @@ def infer_scanpy_signed_marker_roles(
         resolved = resolve_marker_columns(work, schema=schema or MarkerSchema())
         group_column = resolved.get("group", "group")
         diagnostics = {
-            "mode": "scanpy_signed",
+            "mode": "signed",
             "inference_applied": False,
             "existing_roles_preserved": True,
+            "direction_source": "logfoldchanges",
+            "directional_score_column": None,
+            "directional_score_used": False,
             "n_input_rows": int(markers_df.shape[0]),
             "n_output_rows": int(work.shape[0]),
             "n_positive_inferred": 0,
@@ -156,6 +210,7 @@ def infer_scanpy_signed_marker_roles(
             "n_nonfinite_logfoldchange": 0,
             "n_below_effect_threshold": 0,
             "n_score_sign_discordant": 0,
+            "n_zero_directional_score": 0,
             "n_zero_score": 0,
             "groups_with_positive": (
                 work.loc[
@@ -186,13 +241,13 @@ def infer_scanpy_signed_marker_roles(
     resolved = resolve_marker_columns(work, schema=schema)
     if "logfoldchanges" not in resolved:
         raise ValueError(
-            "marker_role_inference='scanpy_signed' requires a signed "
-            "logfoldchanges column. Roles are not inferred from scores alone."
+            "marker_role_inference='signed' requires a signed "
+            "log-fold-change column. Roles are not inferred from scores alone."
         )
     missing = {"group", "names"}.difference(resolved)
     if missing:
         raise ValueError(
-            "marker_role_inference='scanpy_signed' requires resolvable group "
+            "marker_role_inference='signed' requires resolvable group "
             f"and gene columns. Missing: {sorted(missing)}."
         )
 
@@ -202,12 +257,18 @@ def infer_scanpy_signed_marker_roles(
     negative = finite_lfc & (lfc < 0) & (lfc <= -log2fc_min)
     directional = positive | negative
 
+    directional_score_column = _resolve_directional_score_column(
+        work,
+        source_kind=source_kind,
+        marker_method=marker_method,
+        schema=schema,
+    )
     score_discordant = pd.Series(False, index=work.index)
     zero_score = pd.Series(False, index=work.index)
-    if "scores" in resolved:
-        score = pd.to_numeric(work[resolved["scores"]], errors="coerce")
+    if directional_score_column is not None:
+        score = pd.to_numeric(work[directional_score_column], errors="coerce")
         finite_score = np.isfinite(score)
-        zero_score = finite_score & (score == 0)
+        zero_score = finite_score & directional & (score == 0)
         score_discordant = finite_score & (
             (positive & (score < 0)) | (negative & (score > 0))
         )
@@ -219,9 +280,12 @@ def infer_scanpy_signed_marker_roles(
     positive_groups = retained.loc[retained["marker_role"] == "positive", resolved["group"]].astype(str).drop_duplicates().tolist()
     negative_groups = retained.loc[retained["marker_role"] == "negative", resolved["group"]].astype(str).drop_duplicates().tolist()
     diagnostics = {
-        "mode": "scanpy_signed",
+        "mode": "signed",
         "inference_applied": True,
         "existing_roles_preserved": False,
+        "direction_source": "logfoldchanges",
+        "directional_score_column": directional_score_column,
+        "directional_score_used": directional_score_column is not None,
         "n_input_rows": int(work.shape[0]),
         "n_output_rows": int(retained.shape[0]),
         "n_positive_inferred": int((retained["marker_role"] == "positive").sum()) if "marker_role" in retained else 0,
@@ -230,6 +294,7 @@ def infer_scanpy_signed_marker_roles(
         "n_nonfinite_logfoldchange": int((~finite_lfc).sum()),
         "n_below_effect_threshold": int((finite_lfc & ~directional).sum()),
         "n_score_sign_discordant": int(score_discordant.sum()),
+        "n_zero_directional_score": int(zero_score.sum()),
         "n_zero_score": int(zero_score.sum()),
         "groups_with_positive": positive_groups,
         "groups_with_negative": negative_groups,
@@ -240,23 +305,21 @@ def infer_scanpy_signed_marker_roles(
     return retained, diagnostics
 
 
+def infer_scanpy_signed_marker_roles(*args, **kwargs):
+    """Compatibility alias for :func:`infer_signed_marker_roles`."""
+    return infer_signed_marker_roles(*args, **kwargs)
+
+
 def _validate_marker_role_inference_for_method(marker_role_inference, marker_method):
-    validate_choice(
-        marker_role_inference,
-        MARKER_ROLE_INFERENCE_MODES,
-        "marker_role_inference",
-    )
+    normalized_inference = _normalize_marker_role_inference(marker_role_inference)
     normalized_method = _normalize_marker_method(marker_method)
-    if (
-        marker_role_inference == "scanpy_signed"
-        and normalized_method in REFERENCE_MARKER_METHODS | PYDESEQ2_MARKER_METHODS
-    ):
+    if normalized_inference == "signed" and normalized_method in REFERENCE_MARKER_METHODS:
         raise ValueError(
-            "marker_role_inference='scanpy_signed' is intended for Scanpy-style "
-            "signed marker results. It is not applied to reference-profile or "
-            "PyDESeq2 marker generation."
+            "marker_role_inference='signed' is intended for signed differential-"
+            "expression tables. Reference-profile marker generation already assigns "
+            "marker roles explicitly when requested."
         )
-    return marker_role_inference
+    return normalized_inference
 
 
 def _get_reference_expression_matrix(adata, layer):
@@ -1288,10 +1351,24 @@ def prepare_markers(
     marker_role_inference_log2fc_min: float = 0.25,
     verbose=True,
 ) -> PreparedMarkers:
-    """Load, generate, or reuse a spatial-unfiltered marker preparation."""
+    """Load, generate, or reuse a spatial-unfiltered marker preparation.
+
+    ``marker_role_inference`` accepts ``"none"``, preferred ``"signed"``,
+    and ``"scanpy_signed"`` as a compatibility alias. Signed inference works
+    with Scanpy and other signed differential-expression marker tables.
+    """
+    normalized_inference = _normalize_marker_role_inference(marker_role_inference)
     if prepared_markers is not None:
         if not isinstance(prepared_markers, PreparedMarkers):
             raise TypeError("prepared_markers must be a PreparedMarkers object.")
+        if (
+            normalized_inference == "signed"
+            and "marker_role" not in prepared_markers.raw_markers_df.columns
+        ):
+            raise ValueError(
+                "PreparedMarkers does not contain inferred marker roles. "
+                "Recreate it with marker_role_inference='signed'."
+            )
         return prepared_markers
 
     chosen_kind = _input_kind_from_sources(
@@ -1305,21 +1382,21 @@ def prepare_markers(
     requested_method = _normalize_marker_method(marker_method)
     normalized_method = "existing" if chosen_kind in {"dataframe", "file"} else requested_method
     validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
-    _validate_marker_role_inference_for_method(
+    normalized_inference = _validate_marker_role_inference_for_method(
         marker_role_inference, normalized_method
     )
     if (
         chosen_kind == "anndata"
         and marker_roles == "phase_specific"
         and normalized_method not in REFERENCE_MARKER_METHODS
-        and marker_role_inference != "scanpy_signed"
+        and normalized_inference != "signed"
     ):
         raise ValueError(
             "Automatic phase-specific role generation is currently supported only for "
             "marker_method='reference'. Provide a marker table with marker_role for "
             "Scanpy or DESeq-derived markers."
         )
-    if marker_role_inference == "scanpy_signed":
+    if normalized_inference == "signed":
         marker_role_inference_log2fc_min = _validate_reference_float_nonnegative(
             marker_role_inference_log2fc_min,
             "marker_role_inference_log2fc_min",
@@ -1357,7 +1434,7 @@ def prepare_markers(
         "reference_negative_min_log2fc": reference_negative_min_log2fc,
         "reference_negative_min_detection": reference_negative_min_detection,
         "reference_negative_min_detection_delta": reference_negative_min_detection_delta,
-        "marker_role_inference": marker_role_inference,
+        "marker_role_inference": normalized_inference,
         "marker_role_inference_log2fc_min": marker_role_inference_log2fc_min,
         "celltype": celltype,
         "gene_id_column": gene_id_column,
@@ -1379,8 +1456,10 @@ def prepare_markers(
         "reference_profile": None,
         "reference_contrast": None,
         "marker_role_inference": {
-            "mode": marker_role_inference,
-            "requested": marker_role_inference != "none",
+            "requested_mode": marker_role_inference,
+            "mode": normalized_inference,
+            "normalized_mode": normalized_inference,
+            "requested": normalized_inference != "none",
             "applied": False,
             "existing_roles_preserved": False,
             "input_source": None,
@@ -1502,14 +1581,18 @@ def prepare_markers(
             ) from exc
         diagnostics["source"] = resolved_source
 
-    if marker_role_inference == "scanpy_signed":
-        raw_df, role_inference_diagnostics = infer_scanpy_signed_marker_roles(
+    if normalized_inference == "signed":
+        raw_df, role_inference_diagnostics = infer_signed_marker_roles(
             raw_df,
             schema=schema,
             log2fc_min=marker_role_inference_log2fc_min,
+            source_kind=diagnostics.get("input_kind"),
+            marker_method=normalized_method,
         )
         diagnostics["marker_role_inference"] = {
             **role_inference_diagnostics,
+            "requested_mode": marker_role_inference,
+            "normalized_mode": normalized_inference,
             "requested": True,
             "applied": role_inference_diagnostics.get("inference_applied", False),
             "input_source": resolved_source,
@@ -1519,10 +1602,24 @@ def prepare_markers(
             and marker_roles == "phase_specific"
         ):
             raise ValueError(
-                "Signed Scanpy role inference creates positive and negative roles only. "
+                "Signed marker-role inference creates positive and negative roles only. "
                 "Use marker_roles='shared', provide a manually annotated marker table "
                 "with presence/identity roles, or use marker_method='reference'."
             )
+
+        # ``standardize_marker_dataframe`` maps score aliases onto canonical
+        # ``scores``. Keep signed DESeq statistics available as their original
+        # column as well, while retaining the historical canonical ranking
+        # column expected downstream.
+        directional_score = role_inference_diagnostics.get(
+            "directional_score_column"
+        )
+        has_canonical_scores = any(
+            str(column).casefold() == "scores" for column in raw_df.columns
+        )
+        if directional_score is not None and not has_canonical_scores:
+            raw_df = raw_df.copy()
+            raw_df["scores"] = raw_df[directional_score]
 
     standardized = standardize_marker_dataframe(
         raw_df,
@@ -1827,6 +1924,7 @@ __all__ = [
     "PreparedMarkers",
     "compute_reference_profile_markers",
     "compute_pseudobulk_deseq_markers",
+    "infer_signed_marker_roles",
     "infer_scanpy_signed_marker_roles",
     "make_marker_table_signature",
     "prepare_markers",

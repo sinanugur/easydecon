@@ -72,8 +72,8 @@ relax assignment settings.
 ## Marker sources
 
 UCell-like scoring works with ordinary marker tables, manual negative markers,
-reference-profile markers, signed Scanpy markers, `PreparedMarkers`, and
-`refine_group`. Signed Scanpy inference is opt-in:
+reference-profile markers, signed Scanpy/DESeq markers, `PreparedMarkers`, and
+`refine_group`. Signed marker-role inference is opt-in:
 
 ```python
 result = ed.run_easydecon(
@@ -81,7 +81,7 @@ result = ed.run_easydecon(
     adata=sc_adata,
     groupby="cell_type",
     marker_method="scanpy",
-    marker_role_inference="scanpy_signed",
+    marker_role_inference="signed",
     marker_roles="shared",
     method="ucell",
     filtering_algorithm="permutation",

@@ -1840,9 +1840,11 @@ def _build_marker_compat_diagnostics(
     prep_diagnostics = dict(getattr(prepared, "diagnostics", {}) or {})
     input_kind = prep_diagnostics.get("input_kind")
     role_inference = prep_diagnostics.get("marker_role_inference")
-    if prepared_markers_used and marker_role_inference == "scanpy_signed":
+    if prepared_markers_used and marker_role_inference in {"signed", "scanpy_signed"}:
         role_inference = {
-            "mode": "scanpy_signed",
+            "requested_mode": marker_role_inference,
+            "mode": "signed",
+            "normalized_mode": "signed",
             "requested": True,
             "applied": False,
             "existing_roles_preserved": "marker_role" in prepared.raw_markers_df,
@@ -1850,7 +1852,9 @@ def _build_marker_compat_diagnostics(
         }
     if not isinstance(role_inference, dict):
         role_inference = {
-            "mode": marker_role_inference,
+            "requested_mode": marker_role_inference,
+            "mode": "signed" if marker_role_inference == "scanpy_signed" else marker_role_inference,
+            "normalized_mode": "signed" if marker_role_inference == "scanpy_signed" else marker_role_inference,
             "requested": marker_role_inference != "none",
             "applied": False,
             "existing_roles_preserved": False,
@@ -1959,17 +1963,22 @@ def read_markers_dataframe(sdata,
                            reference_negative_min_detection: float = 0.10,
                            reference_negative_min_detection_delta: float = 0.05,
                            marker_role_inference: str = "none"):
-    """Compatibility wrapper returning a spatial-selected marker DataFrame."""
+    """Compatibility wrapper returning a spatial-selected marker DataFrame.
+
+    ``marker_role_inference`` accepts ``"none"``, preferred ``"signed"`` for
+    Scanpy/DE-style signed log-fold-change tables, and ``"scanpy_signed"`` as
+    a backward-compatible alias.
+    """
     if prepared_markers is not None and not isinstance(prepared_markers, _PreparedMarkers):
         raise TypeError("prepared_markers must be a PreparedMarkers object.")
     if (
         prepared_markers is not None
-        and marker_role_inference == "scanpy_signed"
+        and marker_role_inference in {"signed", "scanpy_signed"}
         and "marker_role" not in prepared_markers.raw_markers_df.columns
     ):
         raise ValueError(
             "PreparedMarkers does not contain inferred marker roles. "
-            "Recreate it with marker_role_inference='scanpy_signed'."
+            "Recreate it with marker_role_inference='signed'."
         )
     table = get_table(
         sdata,

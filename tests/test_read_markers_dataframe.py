@@ -176,7 +176,9 @@ def test_read_markers_dataframe_returns_diagnostics():
     assert diagnostics["marker_counts_per_celltype"] == {"A": 2, "B": 1}
     assert diagnostics["n_spatial_genes"] == 4
     assert diagnostics["marker_role_inference"] == {
+        "requested_mode": "none",
         "mode": "none",
+        "normalized_mode": "none",
         "requested": False,
         "applied": False,
         "existing_roles_preserved": False,
