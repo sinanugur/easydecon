@@ -85,6 +85,58 @@ selected = ed.select_prepared_markers(
 )
 ```
 
+## Automatic spatial marker selection
+
+`top_n_genes="auto"` is an opt-in, deterministic alternative to a fixed marker
+count. It keeps `PreparedMarkers.raw_markers_df` reusable and performs adaptive
+selection only after intersecting markers with the target spatial table and
+applying the normal log-fold-change, adjusted-p-value, mitochondrial, and
+ribosomal filters.
+
+```python
+result = ed.run_easydecon(
+    sdata=sdata,
+    prepared_markers=prepared,
+    top_n_genes="auto",
+    auto_marker_min=20,
+    auto_marker_max=100,
+    auto_marker_cumulative_fraction=0.90,
+    auto_marker_relative_strength=0.15,
+    auto_marker_padj_cap=20.0,
+    auto_marker_min_detected_spots=1,
+    return_result_object=True,
+)
+```
+
+The selector removes genes that are present in `var_names` but undetected in
+the target expression matrix. When the requested DE ranking is usable,
+including `scores`, `score`, `stat`, `wald_stat`, `statistics`, or an
+explicitly named custom numeric column, that ranking determines which genes
+are retained while adaptive quality determines how many are retained. If the
+requested ranking is unavailable for a group or role, adaptive quality
+determines both order and count. The adaptive quality prefers absolute
+log-fold change combined with adjusted-p-value significance, then absolute
+log-fold change or absolute score.
+`baseMean` is not treated as a default DE ranking statistic, although users may
+request it explicitly. Selection remains independent per group and, when
+`marker_role` is present, per group and role. Set
+`auto_marker_min_detected_spots=0` to disable the expression-detection filter.
+
+For direct selection, pass the same AnnData-like table as `spatial_table`:
+
+```python
+selected, diagnostics = ed.select_prepared_markers(
+    prepared,
+    gene_universe=table.var_names,
+    top_n_genes="auto",
+    spatial_table=table,
+    return_diagnostics=True,
+)
+```
+
+Integer `top_n_genes` values retain the existing fixed per-signature behavior,
+and `top_n_genes=None` retains all markers that pass the normal filters.
+
 `read_markers_dataframe` remains supported when you want the selected marker
 DataFrame directly for one spatial dataset; internally it delegates to
 `prepare_markers` and `select_prepared_markers`.

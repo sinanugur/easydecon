@@ -231,6 +231,40 @@ def summarize_easydecon_result(
         markers_summary["n_spatial_selected_markers"] = selection_diagnostics.get(
             "n_selected_markers"
         )
+        auto_selection = selection_diagnostics.get("auto_marker_selection")
+        if isinstance(auto_selection, dict) and auto_selection.get("enabled"):
+            signature_diagnostics = auto_selection.get("groups", {})
+            selected_counts = [
+                group.get("n_selected")
+                for group in signature_diagnostics.values()
+                if isinstance(group, dict) and group.get("n_selected") is not None
+            ]
+            ranking_sources = sorted(
+                {
+                    str(group["ranking_source"])
+                    for group in signature_diagnostics.values()
+                    if isinstance(group, dict) and group.get("ranking_source")
+                }
+            )
+            size_estimation_sources = sorted(
+                {
+                    str(group["size_estimation_source"])
+                    for group in signature_diagnostics.values()
+                    if isinstance(group, dict)
+                    and group.get("size_estimation_source")
+                }
+            )
+            markers_summary["auto_marker_selection"] = {
+                "enabled": True,
+                "min_selected_per_signature": (
+                    int(min(selected_counts)) if selected_counts else None
+                ),
+                "max_selected_per_signature": (
+                    int(max(selected_counts)) if selected_counts else None
+                ),
+                "ranking_sources": ranking_sources,
+                "size_estimation_sources": size_estimation_sources,
+            }
     prepared = getattr(result, "prepared_markers", None)
     if prepared is not None:
         markers_summary["prepared_marker_method"] = getattr(

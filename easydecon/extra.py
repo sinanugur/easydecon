@@ -209,7 +209,7 @@ def easydecon_workflow(
     groupby: str | None = None,
     sample_col: str | None = None,
     marker_key: str = "rank_genes_groups",
-    top_n_genes: int = 60,
+    top_n_genes: int | str | None = 60,
     sort_by_column: str = "scores",
     ascending: bool = False,
     log2fc_min: float = 0.25,
@@ -297,6 +297,12 @@ def easydecon_workflow(
     fold_change_threshold: float = 2.0,
     minimum_evidence: float = 0.0,
     tie_tolerance: float = 1e-12,
+    auto_marker_min: int = 20,
+    auto_marker_max: int = 100,
+    auto_marker_cumulative_fraction: float = 0.90,
+    auto_marker_relative_strength: float = 0.15,
+    auto_marker_padj_cap: float = 20.0,
+    auto_marker_min_detected_spots: int = 1,
 
 ):
     validate_choice(
@@ -367,6 +373,11 @@ def easydecon_workflow(
             "marker_genes workflows because Phase 1 does not produce "
             "cell-type-specific priors."
         )
+    if isinstance(top_n_genes, str) and top_n_genes != "auto":
+        raise ValueError(
+            "top_n_genes must be an integer greater than or equal to 1, "
+            "None, or 'auto'."
+        )
 
     table = get_table(
         sdata,
@@ -418,11 +429,18 @@ def easydecon_workflow(
         gene_id_column=gene_id_column,
         verbose=verbose,
     )
+    auto_marker_selection = top_n_genes == "auto"
+    phase_top_n = None if auto_marker_selection else top_n_genes
+    top_n_applied_by = (
+        "auto_spatial_marker_selector"
+        if auto_marker_selection
+        else "workflow_phase_resolver"
+    )
     markers_df, selection_diagnostics = select_prepared_markers(
         resolved_prepared,
         gene_universe=table.var_names,
         exclude_celltype=None,
-        top_n_genes=None,
+        top_n_genes="auto" if auto_marker_selection else None,
         sort_by_column=sort_by_column,
         ascending=ascending,
         log2fc_min=log2fc_min,
@@ -431,6 +449,13 @@ def easydecon_workflow(
         drop_mitochondrial=drop_mitochondrial,
         source=marker_source,
         return_diagnostics=True,
+        spatial_table=table if auto_marker_selection else None,
+        auto_marker_min=auto_marker_min,
+        auto_marker_max=auto_marker_max,
+        auto_marker_cumulative_fraction=auto_marker_cumulative_fraction,
+        auto_marker_relative_strength=auto_marker_relative_strength,
+        auto_marker_padj_cap=auto_marker_padj_cap,
+        auto_marker_min_detected_spots=auto_marker_min_detected_spots,
     )
     marker_diagnostics = _build_marker_compat_diagnostics(
         resolved_prepared,
@@ -444,7 +469,7 @@ def easydecon_workflow(
         marker_role_inference=marker_role_inference,
         prepared_markers_used=prepared_markers is not None,
         selection_diagnostics=selection_diagnostics,
-        top_n_applied_by="workflow_phase_resolver",
+        top_n_applied_by=top_n_applied_by,
     )
     if not isinstance(markers_df, pd.DataFrame):
         raise ValueError("Resolved markers_df must be a pandas DataFrame.")
@@ -467,7 +492,7 @@ def easydecon_workflow(
             marker_roles=marker_roles,
             method=method,
             marker_role_column=ucell_marker_role_column,
-            top_n_genes=top_n_genes,
+            top_n_genes=phase_top_n,
             require_phase1=marker_genes is None,
         )
     )
@@ -733,7 +758,7 @@ def easydecon_workflow(
             "fold_change_threshold": fold_change_threshold,
         },
     }
-    diagnostics["markers"]["top_n_applied_by"] = "workflow_phase_resolver"
+    diagnostics["markers"]["top_n_applied_by"] = top_n_applied_by
     if method == "ucell":
         informative_rows = (phase2_result.max(axis=1) > 0)
         diagnostics["phase2"]["n_informative_rows"] = int(informative_rows.sum())

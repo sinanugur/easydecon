@@ -120,6 +120,80 @@ def _validate_optional_top_n(value, name="top_n_genes"):
     return _validate_reference_integer(value, name)
 
 
+def _is_auto_top_n(value):
+    """Return whether spatial adaptive marker selection was requested."""
+    if isinstance(value, str):
+        if value == "auto":
+            return True
+        raise ValueError(
+            "top_n_genes must be an integer greater than or equal to 1, "
+            "None, or 'auto'."
+        )
+    _validate_optional_top_n(value)
+    return False
+
+
+def _validate_auto_marker_parameters(
+    *,
+    auto_marker_min,
+    auto_marker_max,
+    auto_marker_cumulative_fraction,
+    auto_marker_relative_strength,
+    auto_marker_padj_cap,
+    auto_marker_min_detected_spots,
+):
+    min_markers = _validate_reference_integer(auto_marker_min, "auto_marker_min")
+    max_markers = _validate_reference_integer(auto_marker_max, "auto_marker_max")
+    if max_markers < min_markers:
+        raise ValueError(
+            "auto_marker_max must be greater than or equal to auto_marker_min."
+        )
+
+    cumulative_fraction = _validate_reference_probability(
+        auto_marker_cumulative_fraction,
+        "auto_marker_cumulative_fraction",
+    )
+    if cumulative_fraction == 0:
+        raise ValueError(
+            "auto_marker_cumulative_fraction must be greater than 0 and less "
+            "than or equal to 1."
+        )
+    relative_strength = _validate_reference_probability(
+        auto_marker_relative_strength,
+        "auto_marker_relative_strength",
+    )
+    if relative_strength == 0:
+        raise ValueError(
+            "auto_marker_relative_strength must be greater than 0 and less "
+            "than or equal to 1."
+        )
+    if (
+        isinstance(auto_marker_padj_cap, bool)
+        or not isinstance(auto_marker_padj_cap, Real)
+        or not math.isfinite(float(auto_marker_padj_cap))
+        or float(auto_marker_padj_cap) <= 0
+    ):
+        raise ValueError("auto_marker_padj_cap must be a finite number greater than 0.")
+    if (
+        isinstance(auto_marker_min_detected_spots, bool)
+        or not isinstance(auto_marker_min_detected_spots, Integral)
+        or int(auto_marker_min_detected_spots) < 0
+    ):
+        raise ValueError(
+            "auto_marker_min_detected_spots must be an integer greater than or "
+            "equal to 0."
+        )
+
+    return {
+        "min_markers": min_markers,
+        "max_markers": max_markers,
+        "cumulative_fraction": float(cumulative_fraction),
+        "relative_strength": float(relative_strength),
+        "padj_cap": float(auto_marker_padj_cap),
+        "min_detected_spots": int(auto_marker_min_detected_spots),
+    }
+
+
 def _validate_bool(value, name):
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be a bool.")
@@ -1581,6 +1655,13 @@ def prepare_markers(
             ) from exc
         diagnostics["source"] = resolved_source
 
+    input_resolved_columns = resolve_marker_columns(raw_df, schema=schema)
+    diagnostics["input_marker_columns"] = [str(column) for column in raw_df.columns]
+    input_score_column = input_resolved_columns.get("scores")
+    diagnostics["input_score_column"] = (
+        str(input_score_column) if input_score_column is not None else None
+    )
+
     if normalized_inference == "signed":
         raw_df, role_inference_diagnostics = infer_signed_marker_roles(
             raw_df,
@@ -1674,6 +1755,353 @@ def prepare_markers(
     )
 
 
+def _spatial_gene_detection_counts(spatial_table):
+    """Return sparse-safe detected-location counts indexed by gene name."""
+    missing = [
+        attribute
+        for attribute in ("var_names", "X")
+        if not hasattr(spatial_table, attribute)
+    ]
+    if missing:
+        raise TypeError(
+            "top_n_genes='auto' requires an AnnData-like spatial_table with "
+            f"var_names and X. Missing: {', '.join(missing)}."
+        )
+
+    matrix = spatial_table.X
+    if issparse(matrix):
+        counts = np.asarray(matrix.getnnz(axis=0)).ravel()
+    else:
+        matrix_array = np.asarray(matrix)
+        if matrix_array.ndim != 2:
+            raise TypeError(
+                "top_n_genes='auto' requires spatial_table.X to be a "
+                "two-dimensional expression matrix."
+            )
+        counts = np.count_nonzero(matrix_array, axis=0)
+
+    var_names = pd.Index(spatial_table.var_names)
+    if len(var_names) != len(counts):
+        raise ValueError(
+            "spatial_table.var_names must have one entry per column in "
+            "spatial_table.X for top_n_genes='auto'."
+        )
+    detection = pd.Series(counts, index=var_names.astype(str), dtype="int64")
+    if detection.index.has_duplicates:
+        detection = detection.groupby(level=0, sort=False).max()
+    return detection
+
+
+def _auto_marker_quality(markers_df, padj_cap, *, allow_score_quality=True):
+    """Return a finite non-negative quality vector and its public source."""
+    if {"logfoldchanges", "pvals_adj"}.issubset(markers_df.columns):
+        lfc = pd.to_numeric(markers_df["logfoldchanges"], errors="coerce").abs()
+        padj = pd.to_numeric(markers_df["pvals_adj"], errors="coerce")
+        tiny = np.finfo(float).tiny
+        significance = -np.log10(padj.clip(lower=tiny))
+        quality = lfc * significance.clip(lower=0, upper=padj_cap)
+        source = "abs_logfoldchanges_x_capped_neg_log10_pvals_adj"
+    elif "logfoldchanges" in markers_df.columns:
+        quality = pd.to_numeric(
+            markers_df["logfoldchanges"], errors="coerce"
+        ).abs()
+        source = "abs_logfoldchanges"
+    elif allow_score_quality and "scores" in markers_df.columns:
+        quality = pd.to_numeric(markers_df["scores"], errors="coerce").abs()
+        source = "abs_scores"
+    else:
+        quality = pd.Series(0.0, index=markers_df.index)
+        source = "marker_rank_stable_order"
+
+    quality_array = np.asarray(quality, dtype=float)
+    quality_array = np.nan_to_num(
+        quality_array,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    quality_array = np.maximum(quality_array, 0.0)
+    return quality_array, source
+
+
+_AUTO_DE_RANKING_COLUMNS = (
+    "scores",
+    "score",
+    "stat",
+    "wald_stat",
+    "statistics",
+)
+
+
+def _standardized_auto_ranking_column(markers_df, source_column):
+    resolved = resolve_marker_columns(markers_df)
+    for canonical, original in resolved.items():
+        if original == source_column:
+            return canonical
+    return source_column
+
+
+def _resolve_auto_ranking_source(prepared, sort_by_column):
+    """Resolve an internal preferred ranking without accepting baseMean by default."""
+    if sort_by_column is None:
+        return None
+
+    raw_df = prepared.raw_markers_df
+    requested = str(sort_by_column).casefold()
+    input_score_column = prepared.diagnostics.get("input_score_column")
+    input_score_folded = (
+        str(input_score_column).casefold()
+        if input_score_column is not None
+        else None
+    )
+
+    if requested == "scores":
+        input_kind = str(prepared.diagnostics.get("input_kind") or "").casefold()
+        candidates = (
+            ("stat", "wald_stat", "statistics", "scores", "score")
+            if input_kind == "anndata_pydeseq2"
+            else _AUTO_DE_RANKING_COLUMNS
+        )
+
+        source_column = None
+        diagnostic_source = None
+        if input_score_folded in {"basemean"}:
+            # A canonical ``scores`` column may be a standardized baseMean.
+            # Ignore that canonical column, but still allow another real DE
+            # statistic that was retained as an extra column.
+            source_column = _find_column_case_insensitive(
+                raw_df, "stat", "wald_stat", "statistics", "score"
+            )
+            diagnostic_source = source_column
+        elif input_score_folded in set(_AUTO_DE_RANKING_COLUMNS):
+            # Prefer an existing canonical score. Signed preparation may retain
+            # the original ``stat`` column while adding canonical ``scores``;
+            # using the canonical column preserves magnitude ranking for
+            # negative marker roles in standardization.
+            source_column = _find_column_case_insensitive(raw_df, "scores")
+            if source_column is None:
+                source_column = _find_column_case_insensitive(
+                    raw_df, input_score_column
+                )
+            diagnostic_source = input_score_column
+        else:
+            source_column = _find_column_case_insensitive(raw_df, *candidates)
+            diagnostic_source = source_column
+
+        if source_column is None:
+            return None
+        return {
+            "sort_column": source_column,
+            "column": _standardized_auto_ranking_column(raw_df, source_column),
+            "source": str(diagnostic_source),
+        }
+
+    # Non-default requests are explicit custom rankings. Match exact column
+    # names case-insensitively rather than maintaining a package-specific list.
+    source_column = _find_column_case_insensitive(raw_df, sort_by_column)
+    diagnostic_source = source_column
+    if source_column is None and input_score_folded == requested:
+        source_column = _find_column_case_insensitive(raw_df, "scores")
+        diagnostic_source = input_score_column
+    if source_column is None:
+        return None
+    return {
+        "sort_column": source_column,
+        "column": _standardized_auto_ranking_column(raw_df, source_column),
+        "source": str(diagnostic_source),
+    }
+
+
+def _allow_auto_score_quality(prepared):
+    """Return whether canonical scores are not known to originate from baseMean."""
+    input_score_column = prepared.diagnostics.get("input_score_column")
+    if input_score_column is not None:
+        return str(input_score_column).casefold() != "basemean"
+    raw_df = prepared.raw_markers_df
+    meaningful_score = _find_column_case_insensitive(
+        raw_df, *_AUTO_DE_RANKING_COLUMNS
+    )
+    base_mean = _find_column_case_insensitive(raw_df, "baseMean", "basemean")
+    return meaningful_score is not None or base_mean is None
+
+
+def _usable_auto_ranking(signature_df, ranking_metadata):
+    if not ranking_metadata:
+        return False, False
+    ranking_column = ranking_metadata["column"]
+    if ranking_column not in signature_df.columns:
+        return False, False
+    values = pd.to_numeric(signature_df[ranking_column], errors="coerce")
+    finite_values = values[np.isfinite(values)]
+    if finite_values.empty:
+        return False, False
+    return True, bool(finite_values.nunique(dropna=True) <= 1)
+
+
+def _auto_signature_key(group_value, role_value=None):
+    if role_value is None:
+        return str(group_value)
+    return f"{group_value}::{role_value}"
+
+
+def _select_auto_markers(
+    markers_df,
+    spatial_table,
+    parameters,
+    ranking_metadata=None,
+    allow_score_quality=True,
+):
+    """Adaptively select markers per group/role after standard hard filters."""
+    detection = _spatial_gene_detection_counts(spatial_table)
+    has_roles = "marker_role" in markers_df.columns
+    signature_columns = ["group", "marker_role"] if has_roles else ["group"]
+    pieces = []
+    group_diagnostics = {}
+    n_removed_by_detection = 0
+
+    groupers = [markers_df[column] for column in signature_columns]
+    for signature, signature_df in markers_df.groupby(
+        groupers,
+        sort=False,
+        group_keys=False,
+    ):
+        signature_df = signature_df.copy()
+        signature_values = signature if isinstance(signature, tuple) else (signature,)
+        group_value = signature_values[0]
+        role_value = signature_values[1] if has_roles else None
+        n_before = int(signature_df.shape[0])
+
+        if parameters["min_detected_spots"] > 0:
+            detected = (
+                signature_df["names"].map(detection).fillna(0).astype("int64")
+            )
+            keep = detected >= parameters["min_detected_spots"]
+            n_removed_by_detection += int((~keep).sum())
+            signature_df = signature_df.loc[keep].copy()
+
+        n_available = int(signature_df.shape[0])
+        k_relative = None
+        k_cumulative = None
+        cutoff_quality = None
+        selected_last_quality = None
+        fallback_used = False
+        quality_source = "none"
+        ranking_source = "marker_rank_stable_order"
+        ranking_fallback_used = True
+        ranking_all_tied = False
+        size_estimation_source = "none"
+
+        if n_available:
+            quality, quality_source = _auto_marker_quality(
+                signature_df,
+                parameters["padj_cap"],
+                allow_score_quality=allow_score_quality,
+            )
+            positive_quality = bool(np.any(quality > 0))
+            preferred_ranking_usable, ranking_all_tied = _usable_auto_ranking(
+                signature_df,
+                ranking_metadata,
+            )
+            if positive_quality:
+                quality_order = np.argsort(-quality, kind="stable")
+                sorted_quality = quality[quality_order]
+                strongest = sorted_quality[0]
+                k_relative = max(
+                    1,
+                    int(
+                        np.count_nonzero(
+                            sorted_quality / strongest
+                            >= parameters["relative_strength"]
+                        )
+                    ),
+                )
+                cumulative = np.cumsum(sorted_quality) / sorted_quality.sum()
+                k_cumulative = max(
+                    1,
+                    int(
+                        np.searchsorted(
+                            cumulative,
+                            parameters["cumulative_fraction"],
+                            side="left",
+                        )
+                        + 1
+                    ),
+                )
+                if n_available <= parameters["min_markers"]:
+                    n_selected = n_available
+                else:
+                    n_selected = min(k_relative, k_cumulative)
+                    n_selected = max(parameters["min_markers"], n_selected)
+                    n_selected = min(parameters["max_markers"], n_selected)
+                    n_selected = min(n_available, n_selected)
+                cutoff_quality = float(sorted_quality[n_selected - 1])
+                size_estimation_source = quality_source
+                if preferred_ranking_usable:
+                    ranking_source = ranking_metadata["source"]
+                    ranking_fallback_used = False
+                else:
+                    signature_df = signature_df.iloc[quality_order].copy()
+                    quality = quality[quality_order]
+                    ranking_source = quality_source
+                selected_last_quality = float(quality[n_selected - 1])
+            else:
+                fallback_used = True
+                n_selected = min(n_available, parameters["min_markers"])
+                quality_source = "none"
+                if preferred_ranking_usable:
+                    ranking_source = ranking_metadata["source"]
+                    ranking_fallback_used = False
+            selected_signature = signature_df.head(n_selected).copy()
+            pieces.append(selected_signature)
+        else:
+            n_selected = 0
+
+        key = _auto_signature_key(group_value, role_value)
+        group_diagnostics[key] = {
+            "group": str(group_value),
+            "marker_role": str(role_value) if role_value is not None else None,
+            "n_candidates_before_auto": n_before,
+            "n_candidates_after_spatial_detection": n_available,
+            "n_selected": int(n_selected),
+            "k_relative": k_relative,
+            "k_cumulative": k_cumulative,
+            "selected_fraction": (
+                float(n_selected / n_available) if n_available else 0.0
+            ),
+            "quality_source": quality_source,
+            "ranking_source": ranking_source,
+            "size_estimation_source": size_estimation_source,
+            "ranking_fallback_used": ranking_fallback_used,
+            "ranking_all_tied": ranking_all_tied,
+            "fallback_used": fallback_used,
+            "cutoff_quality": cutoff_quality,
+            "size_cutoff_quality": cutoff_quality,
+            "selected_last_quality": selected_last_quality,
+        }
+
+    if pieces:
+        selected = pd.concat(pieces, ignore_index=False)
+    else:
+        selected = markers_df.iloc[0:0].copy()
+    if not selected.empty:
+        rank_groupers = [selected[column] for column in signature_columns]
+        selected["marker_rank"] = (
+            selected.groupby(rank_groupers, sort=False).cumcount() + 1
+        )
+    selected.set_index("group", drop=False, inplace=True)
+
+    auto_diagnostics = {
+        "enabled": True,
+        "parameters": dict(parameters),
+        "quality_strategy": (
+            "preferred_ranking_with_adaptive_size_and_adaptive_fallback"
+        ),
+        "n_removed_by_spatial_detection": int(n_removed_by_detection),
+        "groups": group_diagnostics,
+    }
+    return selected, auto_diagnostics
+
+
 def select_prepared_markers(
     prepared,
     gene_universe,
@@ -1687,24 +2115,76 @@ def select_prepared_markers(
     drop_mitochondrial=False,
     source=None,
     return_diagnostics=False,
+    spatial_table=None,
+    auto_marker_min=20,
+    auto_marker_max=100,
+    auto_marker_cumulative_fraction=0.90,
+    auto_marker_relative_strength=0.15,
+    auto_marker_padj_cap=20.0,
+    auto_marker_min_detected_spots=1,
 ) -> pd.DataFrame:
     """Select spatial-specific markers from a reusable marker preparation."""
     if not isinstance(prepared, PreparedMarkers):
         raise TypeError("prepared must be a PreparedMarkers object.")
 
-    effective_sort_column = sort_by_column
-    resolved_columns = resolve_marker_columns(prepared.raw_markers_df)
-    if sort_by_column == "scores" and "scores" not in resolved_columns:
-        effective_sort_column = None
+    auto_selection = _is_auto_top_n(top_n_genes)
+    auto_parameters = None
+    if auto_selection:
+        auto_parameters = _validate_auto_marker_parameters(
+            auto_marker_min=auto_marker_min,
+            auto_marker_max=auto_marker_max,
+            auto_marker_cumulative_fraction=auto_marker_cumulative_fraction,
+            auto_marker_relative_strength=auto_marker_relative_strength,
+            auto_marker_padj_cap=auto_marker_padj_cap,
+            auto_marker_min_detected_spots=auto_marker_min_detected_spots,
+        )
+        if spatial_table is None:
+            raise ValueError(
+                "top_n_genes='auto' requires spatial_table so marker detection "
+                "can be evaluated in the target spatial dataset."
+            )
+
+    ranking_metadata = None
+    allow_score_quality = True
+    if auto_selection:
+        ranking_metadata = _resolve_auto_ranking_source(prepared, sort_by_column)
+        allow_score_quality = _allow_auto_score_quality(prepared)
+        if ranking_metadata is not None:
+            effective_sort_column = ranking_metadata["sort_column"]
+        elif str(sort_by_column).casefold() == "scores":
+            effective_sort_column = None
+        else:
+            effective_sort_column = sort_by_column
+    else:
+        effective_sort_column = sort_by_column
+        resolved_columns = resolve_marker_columns(prepared.raw_markers_df)
+        if sort_by_column == "scores" and "scores" not in resolved_columns:
+            effective_sort_column = None
 
     raw_df = prepared.raw_markers_df
+    standardization_df = raw_df
+    standardization_ascending = ascending
+    stable_order_column = None
+    if (
+        auto_selection
+        and ranking_metadata is None
+        and str(sort_by_column).casefold() == "scores"
+    ):
+        stable_order_column = "_easydecon_auto_stable_order"
+        while stable_order_column in raw_df.columns:
+            stable_order_column = f"_{stable_order_column}"
+        standardization_df = raw_df.copy()
+        standardization_df[stable_order_column] = np.arange(raw_df.shape[0])
+        effective_sort_column = stable_order_column
+        standardization_ascending = True
+
     selected = standardize_marker_dataframe(
-        raw_df,
+        standardization_df,
         gene_universe=gene_universe,
         exclude_celltype=exclude_celltype,
-        top_n_genes=top_n_genes,
+        top_n_genes=None if auto_selection else top_n_genes,
         sort_by_column=effective_sort_column,
-        ascending=ascending,
+        ascending=standardization_ascending,
         log2fc_min=log2fc_min,
         pval_cutoff=pval_cutoff,
         drop_ribosomal=drop_ribosomal,
@@ -1712,6 +2192,17 @@ def select_prepared_markers(
         source=prepared.source if source is None else source,
         copy=True,
     )
+    if stable_order_column is not None:
+        selected.drop(columns=stable_order_column, inplace=True)
+    auto_diagnostics = None
+    if auto_selection:
+        selected, auto_diagnostics = _select_auto_markers(
+            selected,
+            spatial_table,
+            auto_parameters,
+            ranking_metadata=ranking_metadata,
+            allow_score_quality=allow_score_quality,
+        )
     if not return_diagnostics:
         return selected
 
@@ -1745,15 +2236,22 @@ def select_prepared_markers(
             else {}
         ),
         "top_n_genes": top_n_genes,
-        "sort_by_column": effective_sort_column,
+        "sort_by_column": (
+            ranking_metadata["source"]
+            if auto_selection and ranking_metadata is not None
+            else None if stable_order_column is not None else effective_sort_column
+        ),
         "ascending": bool(ascending),
         "log2fc_min": float(log2fc_min),
         "pval_cutoff": float(pval_cutoff),
         "drop_ribosomal": bool(drop_ribosomal),
         "drop_mitochondrial": bool(drop_mitochondrial),
         "source": prepared.source if source is None else source,
-        "selected_genes": sorted(selected_names),
     }
+    if auto_diagnostics is not None:
+        diagnostics["auto_marker_selection"] = auto_diagnostics
+    else:
+        diagnostics["selected_genes"] = sorted(selected_names)
     return selected, diagnostics
 
 

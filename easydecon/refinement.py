@@ -91,6 +91,12 @@ def _read_marker_kwargs(workflow_kwargs):
         "sample_col": "sample_col",
         "marker_key": "marker_key",
         "top_n_genes": "top_n_genes",
+        "auto_marker_min": "auto_marker_min",
+        "auto_marker_max": "auto_marker_max",
+        "auto_marker_cumulative_fraction": "auto_marker_cumulative_fraction",
+        "auto_marker_relative_strength": "auto_marker_relative_strength",
+        "auto_marker_padj_cap": "auto_marker_padj_cap",
+        "auto_marker_min_detected_spots": "auto_marker_min_detected_spots",
         "sort_by_column": "sort_by_column",
         "ascending": "ascending",
         "log2fc_min": "log2fc_min",
@@ -294,6 +300,30 @@ def refine_group(
         child_result = None
         marker_kwargs = _read_marker_kwargs(workflow_kwargs)
         requested_top_n = marker_kwargs.pop("top_n_genes", 60)
+        if isinstance(requested_top_n, str) and requested_top_n != "auto":
+            raise ValueError(
+                "top_n_genes must be an integer greater than or equal to 1, "
+                "None, or 'auto'."
+            )
+        auto_marker_min = marker_kwargs.pop("auto_marker_min", 20)
+        auto_marker_max = marker_kwargs.pop("auto_marker_max", 100)
+        auto_marker_cumulative_fraction = marker_kwargs.pop(
+            "auto_marker_cumulative_fraction", 0.90
+        )
+        auto_marker_relative_strength = marker_kwargs.pop(
+            "auto_marker_relative_strength", 0.15
+        )
+        auto_marker_padj_cap = marker_kwargs.pop("auto_marker_padj_cap", 20.0)
+        auto_marker_min_detected_spots = marker_kwargs.pop(
+            "auto_marker_min_detected_spots", 1
+        )
+        auto_marker_selection = requested_top_n == "auto"
+        phase_top_n = None if auto_marker_selection else requested_top_n
+        top_n_applied_by = (
+            "auto_spatial_marker_selector"
+            if auto_marker_selection
+            else "refinement_phase_resolver"
+        )
         sort_by_column = marker_kwargs.pop("sort_by_column", "scores")
         ascending = marker_kwargs.pop("ascending", False)
         log2fc_min = marker_kwargs.pop("log2fc_min", 0.25)
@@ -319,7 +349,7 @@ def refine_group(
         child_markers, selection_diagnostics = select_prepared_markers(
             resolved_prepared,
             gene_universe=child_table.var_names,
-            top_n_genes=None,
+            top_n_genes="auto" if auto_marker_selection else None,
             sort_by_column=sort_by_column,
             ascending=ascending,
             log2fc_min=log2fc_min,
@@ -327,6 +357,13 @@ def refine_group(
             drop_ribosomal=drop_ribosomal,
             drop_mitochondrial=drop_mitochondrial,
             return_diagnostics=True,
+            spatial_table=child_table if auto_marker_selection else None,
+            auto_marker_min=auto_marker_min,
+            auto_marker_max=auto_marker_max,
+            auto_marker_cumulative_fraction=auto_marker_cumulative_fraction,
+            auto_marker_relative_strength=auto_marker_relative_strength,
+            auto_marker_padj_cap=auto_marker_padj_cap,
+            auto_marker_min_detected_spots=auto_marker_min_detected_spots,
         )
         marker_diagnostics = _build_marker_compat_diagnostics(
             resolved_prepared,
@@ -340,7 +377,7 @@ def refine_group(
             marker_role_inference=marker_kwargs.get("marker_role_inference", "none"),
             prepared_markers_used=prepared_markers is not None,
             selection_diagnostics=selection_diagnostics,
-            top_n_applied_by="refinement_phase_resolver",
+            top_n_applied_by=top_n_applied_by,
         )
         _, phase2_markers, marker_role_diagnostics = resolve_phase_marker_tables(
             child_markers,
@@ -349,9 +386,7 @@ def refine_group(
             marker_role_column=workflow_kwargs.get(
                 "ucell_marker_role_column", "marker_role"
             ),
-            top_n_genes=(
-                requested_top_n
-            ),
+            top_n_genes=phase_top_n,
             require_phase1=False,
         )
         phase2_performance = {}

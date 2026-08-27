@@ -111,6 +111,14 @@ workflow `top_n_genes`. `read_markers_dataframe` remains supported for backward
 compatibility when a selected DataFrame is desired directly, but it is no
 longer the recommended modern marker-preparation API.
 
+Use `top_n_genes="auto"` to choose a deterministic, spatially usable marker
+count independently per cell type (and per marker role when roles are present).
+This opt-in mode removes undetected genes and applies a lightweight adaptive
+quality cutoff after the usual marker filters. A usable requested DE score
+determines marker order while adaptive quality determines the count; otherwise
+adaptive quality supplies both. Integer and `None` behavior is unchanged. See
+[marker inputs](docs/marker_inputs.md#automatic-spatial-marker-selection).
+
 easydecon can use existing marker tables, existing Scanpy
 `rank_genes_groups`, generated Scanpy markers, pseudobulk PyDESeq2 markers,
 reference-profile markers, and reusable `PreparedMarkers`. Use `marker_method`
