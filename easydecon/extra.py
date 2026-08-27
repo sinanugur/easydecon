@@ -250,7 +250,8 @@ def easydecon_workflow(
     return_result_object: bool = False,
     return_diagnostics: bool = False,
     # === Phase 1 (priors): common_markers_gene_expression_and_filter ===
-    aggregation_method: str = "sum",      # {"sum","mean","median"} supported by your helper funcs
+    aggregation_method: str = "sum",      # {"sum","mean","median","coverage"}
+    coverage_power: float = 0.5,           # coverage aggregation penalty exponent
     filtering_algorithm: str = "permutation",  # {"permutation","quantile"}
     num_permutations: int = 5000,         # number of permutations
     parametric: bool = True,              # parametric or empirical quantile
@@ -535,6 +536,7 @@ def easydecon_workflow(
         exclude_group_names=exclude_group_names,
         bin_size=bin_size,
         aggregation_method=aggregation_method,
+        coverage_power=coverage_power,
         add_to_obs=True if marker_genes is not None else False,
         filtering_algorithm=filtering_algorithm,
         num_permutations=num_permutations,
@@ -726,6 +728,7 @@ def easydecon_workflow(
         "phase1": {
             "filtering_algorithm": filtering_algorithm,
             "aggregation_method": aggregation_method,
+            "coverage_power": coverage_power,
             "alpha": alpha,
             "num_permutations": num_permutations,
             "n_subs": n_subs,

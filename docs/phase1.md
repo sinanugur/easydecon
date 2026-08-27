@@ -34,7 +34,11 @@ Supported values are defined in `AGGREGATION_METHODS`:
 | `sum` | Sum marker expression per spatial location. |
 | `mean` | Mean marker expression per spatial location. |
 | `median` | Median marker expression per spatial location. |
-| `cs` | Composite score via the package's `composite_score` helper. |
+| `coverage` | Mean expression among detected markers multiplied by the detected-marker fraction raised to `coverage_power`. |
+
+`coverage_power` controls how strongly incomplete marker recovery is
+penalized. `0` ignores coverage, `1` gives the ordinary mean for non-negative
+expression, and the default `0.5` applies a square-root coverage penalty.
 
 ## Filtering method decision table
 
@@ -93,6 +97,10 @@ Relevant parameters:
 
 `aggregation_method`
 : Aggregates expression for both observed and random marker sets.
+
+`coverage_power`
+: Coverage-penalty exponent used when `aggregation_method="coverage"`. The
+  same value is used for observed marker scores and permutation null scores.
 
 `phase1_output_stat`
 : Selects thresholded expression evidence or `-log10(p)` output.

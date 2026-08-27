@@ -89,6 +89,44 @@ def sparse_var(matrix, axis=0):
     return sq_mean - mean_sq
 
 
+def _aggregate_marker_expression(
+    expr_df,
+    method,
+    coverage_power=0.5,
+):
+    """Aggregate marker expression by row without Python-level row callbacks."""
+    if method == "sum":
+        return expr_df.sum(axis=1)
+    if method == "mean":
+        return expr_df.mean(axis=1)
+    if method == "median":
+        return expr_df.median(axis=1)
+    if method == "coverage":
+        n_markers = expr_df.shape[1]
+        if n_markers == 0:
+            return pd.Series(0.0, index=expr_df.index, dtype=float)
+
+        values = expr_df.to_numpy()
+        positive_mask = values > 0
+        detected = positive_mask.sum(axis=1)
+        positive_sums = np.where(positive_mask, values, 0.0).sum(axis=1)
+        scores = np.zeros(values.shape[0], dtype=float)
+        valid = detected > 0
+
+        if coverage_power == 0.5:
+            scores[valid] = positive_sums[valid] / np.sqrt(
+                detected[valid] * n_markers
+            )
+        else:
+            scores[valid] = (
+                positive_sums[valid] / detected[valid]
+            ) * (detected[valid] / n_markers) ** coverage_power
+
+        return pd.Series(scores, index=expr_df.index)
+
+    raise ValueError(f"Unsupported aggregation method: {method!r}.")
+
+
 def _validate_permutation_gene_pool_fraction(value):
     """Validate and normalize the Phase 1 permutation-pool setting."""
     if value == "auto":
@@ -260,6 +298,7 @@ def common_markers_gene_expression_and_filter(
     output_stat: str = "expression",  # NEW: {"expression", "minus_log10_p"}
     verbose: bool = True,
     random_state: int | None = 10,
+    coverage_power: float = 0.5,
     _diagnostics_out=None,
     **kwargs
 ) -> pd.DataFrame:
@@ -284,7 +323,15 @@ def common_markers_gene_expression_and_filter(
     bin_size
         Bin size used when resolving a SpatialData table.
     aggregation_method
-        One of ``"sum"``, ``"mean"``, ``"median"``, or ``"cs"``.
+        One of ``"sum"``, ``"mean"``, ``"median"``, or ``"coverage"``.
+        Coverage aggregation is the mean expression among detected markers
+        multiplied by the detected-marker fraction raised to
+        ``coverage_power``.
+    coverage_power
+        Controls how strongly incomplete marker recovery is penalized for
+        coverage aggregation. ``0`` ignores coverage, ``1`` gives the ordinary
+        mean for non-negative expression, and the default ``0.5`` applies a
+        square-root coverage penalty.
     add_to_obs
         Whether to merge Phase 1 columns into ``table.obs``.
     filtering_algorithm
@@ -314,7 +361,11 @@ def common_markers_gene_expression_and_filter(
     validate_choice(
         filtering_algorithm, FILTERING_ALGORITHMS, "filtering_algorithm"
     )
+    validate_choice(aggregation_method, AGGREGATION_METHODS, "aggregation_method")
     validate_choice(output_stat, PHASE1_OUTPUT_STATS, "output_stat")
+    coverage_power = validate_probability_range(
+        coverage_power, "coverage_power"
+    )
     if filtering_algorithm == "quantile" and output_stat == "minus_log10_p":
         raise ValueError("output_stat='minus_log10_p' requires filtering_algorithm='permutation' or 'nb'.")
     validate_probability_range(
@@ -339,6 +390,8 @@ def common_markers_gene_expression_and_filter(
 
     phase1_diagnostics = {
         "filtering_algorithm": filtering_algorithm,
+        "aggregation_method": aggregation_method,
+        "coverage_power": float(coverage_power),
         "random_state": random_state,
         "groups": {},
     }
@@ -422,17 +475,6 @@ def common_markers_gene_expression_and_filter(
     # Prepare a final DataFrame to collect group results
     result_df = pd.DataFrame(index=spots_to_be_used)
 
-    # Aggregation functions
-    aggregation_funcs = {
-        "sum": "sum",
-        "mean": "mean",
-        "median": "median",
-        "cs": composite_score,  # or any custom aggregator
-    }
-
-    validate_choice(aggregation_method, AGGREGATION_METHODS, "aggregation_method")
-    aggregator = aggregation_funcs[aggregation_method]
-
     tqdm.pandas()
     # -----------------------------------------------------------
     # Loop over each group in the dictionary
@@ -472,10 +514,11 @@ def common_markers_gene_expression_and_filter(
         #expr_matrix = table[spots_to_be_used, filtered_genes].to_df()
         expr_matrix = table[obs_mask, var_mask].to_df()
 
-        if isinstance(aggregator, str):
-            aggregated_vals = expr_matrix.agg(aggregator, axis=1)
-        else:
-            aggregated_vals = expr_matrix.apply(aggregator, axis=1)
+        aggregated_vals = _aggregate_marker_expression(
+            expr_matrix,
+            aggregation_method,
+            coverage_power=coverage_power,
+        )
 
         group_expression = aggregated_vals.to_frame(name=group_name)
 
@@ -516,7 +559,11 @@ def common_markers_gene_expression_and_filter(
                 }
             )
 
-            marker_expr = table[:, filtered_genes].to_df().agg(aggregator, axis=1)
+            marker_expr = _aggregate_marker_expression(
+                table[:, filtered_genes].to_df(),
+                aggregation_method,
+                coverage_power=coverage_power,
+            )
             signal_low, signal_high = marker_expr.quantile([subsample_signal_quantile, 1-subsample_signal_quantile])
             candidate_spots = marker_expr[(marker_expr >= signal_low) & (marker_expr <= signal_high)].index
             group_diagnostics["candidate_spot_count"] = int(len(candidate_spots))
@@ -571,10 +618,11 @@ def common_markers_gene_expression_and_filter(
                             marker_set_size,
                         )
 
-                        if isinstance(aggregator, str):
-                            random_vals = all_expr_df[random_genes].agg(aggregator, axis=1)
-                        else:
-                            random_vals = all_expr_df[random_genes].apply(aggregator, axis=1)
+                        random_vals = _aggregate_marker_expression(
+                            all_expr_df[random_genes],
+                            aggregation_method,
+                            coverage_power=coverage_power,
+                        )
                         all_null_scores.append(random_vals.values)
                 # Concatenate results
                 null_scores_concat = (
@@ -3783,9 +3831,3 @@ def add_df_to_spatialdata(sdata,df,bin_size=8,verbose=True):
 def test_function():
     print("Easydecon loaded!")
     print("Test function executed!")
-
-
-
-def composite_score(row):
-    nonzero = row[row > 0]
-    return nonzero.sum() * (len(nonzero) / len(row)) if not nonzero.empty else 0

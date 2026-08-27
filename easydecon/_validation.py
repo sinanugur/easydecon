@@ -22,7 +22,7 @@ REFERENCE_MARKER_METHODS = frozenset({"reference", "rctd_like"})
 REFERENCE_CONTRASTS = frozenset({"mean_other", "max_other"})
 FILTERING_ALGORITHMS = frozenset({"permutation", "quantile", "nb"})
 PHASE1_OUTPUT_STATS = frozenset({"expression", "minus_log10_p"})
-AGGREGATION_METHODS = frozenset({"sum", "mean", "median", "cs"})
+AGGREGATION_METHODS = frozenset({"sum", "mean", "median", "coverage"})
 SIMILARITY_METHODS = frozenset(
     {
         "correlation",
