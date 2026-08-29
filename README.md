@@ -56,14 +56,4 @@ diagnostics before using the assignments downstream.
 
 ## Documentation
 
-Begin with [docs/index.rst](docs/index.rst). Useful guides include:
-
-* [installation and quickstart](docs/usage.rst)
-* [workflow concepts](docs/workflow.md)
-* [marker inputs](docs/marker_inputs.md)
-* [results and interpretation](docs/results.md)
-* [Scanpy markers](docs/scanpy_markers.md)
-* [reference-profile markers](docs/reference_markers.md)
-* [Phase 1](docs/phase1.md) and [Phase 2](docs/phase2.md)
-* [refinement](docs/refinement.md)
-* [visualization](docs/visualization.md)
+Refer to https://easydecon.readthedocs.io/en/latest/
