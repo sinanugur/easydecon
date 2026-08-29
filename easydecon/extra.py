@@ -1,59 +1,542 @@
-from .easydecon import *
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+from ._schema import get_table
+from ._validation import (
+    EVIDENCE_TO_LIKELIHOOD_METHODS,
+    MARKER_ROLE_INFERENCE_MODES,
+    MARKER_ROLE_MODES,
+    validate_choice,
+    validate_positive,
+    validate_probability_range,
+)
+from .easydecon import (
+    _build_marker_compat_diagnostics,
+    _validate_finite_nonnegative,
+    _validate_nonempty_string,
+    _validate_optional_positive_integer,
+    assign_clusters_from_df,
+    common_markers_gene_expression_and_filter,
+    get_clusters_by_similarity_on_tissue,
+)
+from .markers import (
+    PreparedMarkers,
+    prepare_markers,
+    resolve_phase_marker_tables,
+    select_prepared_markers,
+)
+
+
+def _evidence_to_likelihood(
+    evidence_df,
+    method="softmax",
+    softmax_tau=1.0,
+    candidate_mask=None,
+) -> pd.DataFrame:
+    """Transform Phase 2 evidence into likelihoods.
+
+    This preserves the historical easydecon_workflow behavior for both
+    ``row_normalize`` and ``softmax``.
+    """
+    evidence_df = evidence_df.copy()
+    if candidate_mask is not None:
+        candidate_mask = _align_candidate_mask(
+            candidate_mask,
+            index=evidence_df.index,
+            columns=evidence_df.columns,
+        )
+
+    if method == "row_normalize":
+        if candidate_mask is not None:
+            numeric = evidence_df.apply(pd.to_numeric, errors="coerce")
+            numeric = numeric.replace([np.inf, -np.inf], np.nan)
+            values = numeric.to_numpy(dtype=float)
+            mask = candidate_mask.to_numpy(dtype=bool)
+            likelihoods_np = np.zeros_like(values, dtype=float)
+            for row_idx in range(values.shape[0]):
+                row_mask = mask[row_idx]
+                if not bool(row_mask.any()):
+                    continue
+                candidate_values = values[row_idx, row_mask]
+                finite = np.isfinite(candidate_values)
+                if not bool(finite.any()):
+                    continue
+                clean_values = np.where(finite, candidate_values, 0.0)
+                row_min = np.nanmin(clean_values[finite])
+                if row_min < 0:
+                    clean_values = clean_values - row_min
+                clean_values = np.clip(clean_values, 0.0, None)
+                total = clean_values.sum()
+                if total > 0:
+                    likelihoods_np[row_idx, row_mask] = clean_values / total
+            return pd.DataFrame(
+                likelihoods_np,
+                index=evidence_df.index,
+                columns=evidence_df.columns,
+            )
+        min_per_row = evidence_df.min(axis=1)
+        needs_shift = min_per_row < 0
+        if needs_shift.any():
+            evidence_df = evidence_df.sub(min_per_row, axis=0)
+        evidence_df = evidence_df.clip(lower=0)
+        evidence_row_sum = evidence_df.sum(axis=1).replace(0, np.nan)
+        return evidence_df.div(evidence_row_sum, axis=0).fillna(0)
+
+    if method == "softmax":
+        x = evidence_df.to_numpy(dtype=float)
+        x = np.where(np.isfinite(x), x, -np.inf)
+        if candidate_mask is not None:
+            mask = candidate_mask.to_numpy(dtype=bool)
+            x = np.where(mask, x, -np.inf)
+        row_max = np.max(x, axis=1, keepdims=True)
+        valid_rows = np.isfinite(row_max[:, 0])
+        logits = np.zeros_like(x, dtype=float)
+        valid_logits = (x[valid_rows] - row_max[valid_rows]) / softmax_tau
+        logits[valid_rows] = np.exp(valid_logits)
+        if candidate_mask is not None:
+            logits = np.where(mask, logits, 0.0)
+        row_sum = np.sum(logits, axis=1, keepdims=True)
+        row_sum[row_sum == 0] = np.nan
+        likelihoods_np = logits / row_sum
+        likelihoods_np = np.nan_to_num(likelihoods_np, nan=0.0)
+        return pd.DataFrame(
+            likelihoods_np,
+            index=evidence_df.index,
+            columns=evidence_df.columns,
+        )
+
+    raise ValueError("evidence_to_likelihood must be 'row_normalize' or 'softmax'.")
+
+
+def _align_candidate_mask(candidate_mask, index, columns) -> pd.DataFrame:
+    """Return a boolean candidate mask aligned to an output matrix shape."""
+    if not isinstance(candidate_mask, pd.DataFrame):
+        raise TypeError("candidate_mask must be a pandas DataFrame.")
+    return (
+        candidate_mask.reindex(index=index, columns=columns, fill_value=False)
+        .fillna(False)
+        .astype(bool)
+    )
+
+
+def _build_phase2_candidate_mask(
+    priors_df,
+    phase2_groups,
+    spatial_index,
+    threshold=0.0,
+) -> pd.DataFrame:
+    """Build a group-aware Phase 2 candidate mask from Phase 1 priors."""
+    if not isinstance(priors_df, pd.DataFrame):
+        raise TypeError("priors_df must be a pandas DataFrame.")
+    _validate_finite_nonnegative(threshold, "phase2_candidate_threshold")
+    groups = [str(group) for group in phase2_groups]
+    aligned = priors_df.reindex(index=spatial_index, columns=groups)
+    numeric = aligned.apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    numeric = numeric.clip(lower=0.0)
+    return (numeric > threshold).astype(bool)
+
+
+def _summarize_candidate_mask(candidate_mask, *, enabled, threshold) -> dict:
+    """Compact diagnostics for Phase 2 candidate pruning."""
+    exact = float(threshold) == 0.0
+    summary = {
+        "candidate_pruning_enabled": bool(enabled),
+        "candidate_threshold": float(threshold),
+        "exact_candidate_pruning": bool(enabled and exact),
+    }
+    if candidate_mask is None:
+        return summary
+    mask = candidate_mask.astype(bool)
+    total_pairs = int(mask.shape[0] * mask.shape[1])
+    candidate_counts = mask.sum(axis=1).astype(int)
+    active_counts = candidate_counts[candidate_counts > 0]
+    n_candidate_pairs = int(candidate_counts.sum())
+    summary.update(
+        {
+            "n_total_location_group_pairs": total_pairs,
+            "n_candidate_pairs": n_candidate_pairs,
+            "candidate_fraction": (
+                float(n_candidate_pairs / total_pairs) if total_pairs else 0.0
+            ),
+            "n_rows_with_candidates": int((candidate_counts > 0).sum()),
+            "n_rows_without_candidates": int((candidate_counts == 0).sum()),
+            "min_candidates_per_active_row": (
+                int(active_counts.min()) if len(active_counts) else 0
+            ),
+            "median_candidates_per_active_row": (
+                float(active_counts.median()) if len(active_counts) else 0.0
+            ),
+            "max_candidates_per_active_row": (
+                int(active_counts.max()) if len(active_counts) else 0
+            ),
+        }
+    )
+    return summary
+
+
+@dataclass
+class EasyDeconResult:
+    markers_df: pd.DataFrame
+    phase1_result: pd.DataFrame
+    phase2_result: pd.DataFrame
+    assigned_labels: pd.DataFrame
+    priors_df: pd.DataFrame
+    likelihoods_df: pd.DataFrame
+    posterior_df: pd.DataFrame | None
+    assignment_df: pd.DataFrame
+    diagnostics: dict
+    prepared_markers: PreparedMarkers | None = None
+
 
 def easydecon_workflow(
     sdata,
-    markers_df,
+    markers_df=None,
+    prepared_markers=None,
     marker_genes=None,                    # This can be a list of genes, You can only give markers_df
+    filename=None,
+    adata=None,
+    mask_col = "easydecon_mask",          # If markers_genes given, this column will be used to mask informative spots
     # --- shared / data schema ---
     celltype: str = "group",              # column in markers_df holding cluster IDs
     gene_id_column: str = "names",        # column in markers_df holding gene names
     exclude_group_names: list[str] | None = None,
     bin_size: int = 8,                    # used by both phases and assignment
+    # === Marker loading / generation ===
+    marker_method: str = "auto",
+    groupby: str | None = None,
+    sample_col: str | None = None,
+    marker_key: str = "rank_genes_groups",
+    top_n_genes: int | str | None = 60,
+    sort_by_column: str = "scores",
+    ascending: bool = False,
+    log2fc_min: float = 0.25,
+    pval_cutoff: float = 0.05,
+    drop_ribosomal: bool = True,
+    drop_mitochondrial: bool = True,
+    table_key=None,
+    preferred_table_keys=None,
+    marker_source=None,
+    scanpy_method: str = "wilcoxon",
+    layer=None,
+    use_raw=None,
+    reference: str = "rest",
+    copy_adata: bool = True,
+    rank_genes_groups_kwargs=None,
+    min_cells_per_group: int = 20,
+    min_replicates_per_condition: int = 2,
+    deseq_alpha: float = 0.05,
+    deseq_n_cpus=None,
+    deseq_quiet: bool = True,
+    deseq_kwargs=None,
+    deseq_stats_kwargs=None,
+    reference_min_cells: int = 25,
+    reference_min_mean: float = 2e-4,
+    reference_min_log2fc: float = 1.0,
+    reference_min_detection: float = 0.10,
+    reference_min_detection_delta: float = 0.05,
+    reference_pseudocount: float = 1e-9,
+    reference_contrast: str = "max_other",
+    marker_roles: str = "shared",
+    reference_presence_min_log2fc: float = 0.5,
+    reference_presence_min_detection_delta: float = 0.0,
+    reference_negative_min_log2fc: float = 1.0,
+    reference_negative_min_detection: float = 0.10,
+    reference_negative_min_detection_delta: float = 0.05,
+    marker_role_inference: str = "none",
+    verbose: bool = True,
+    return_result_object: bool = False,
+    return_diagnostics: bool = False,
     # === Phase 1 (priors): common_markers_gene_expression_and_filter ===
-    aggregation_method: str = "sum",      # {"sum","mean","median"} supported by your helper funcs
+    aggregation_method: str = "sum",      # {"sum","mean","median","coverage"}
+    coverage_power: float = 0.5,           # coverage aggregation penalty exponent
     filtering_algorithm: str = "permutation",  # {"permutation","quantile"}
     num_permutations: int = 5000,         # number of permutations
     parametric: bool = True,              # parametric or empirical quantile
     alpha: float = 0.01,                  # permutation cutoff level
     subsample_size: int = 25000,          # subsample size for permutation
-    subsample_signal_quantile: float = 0.1,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
-    permutation_gene_pool_fraction: float = 0.3, # top fraction of genes to be used for the null distribution
+    subsample_signal_quantile: float = 0,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
+    permutation_gene_pool_fraction: float | str = "auto",  # variance-ranked null pool fraction or automatic size
+    random_state: int | None = 10,            # reproducible Phase 1 permutation sampling
     n_subs: int = 5,                      # permutation: number of subsamples
     quantile: float = 0.7,                # used only if filtering_algorithm="quantile"
+    phase1_output_stat: str = "expression",  # NEW: {"expression","minus_log10_p"}
     # === Phase 2 (evidence): get_clusters_by_similarity_on_tissue ===
     method: str = "wjaccard",             # {"wjaccard","cosine","spearman","euclidean","jaccard","overlap", ...}
     similarity_by_column: str = "logfoldchanges",  # 
     lambda_param: float = 0.25,           # lambda parameter wjaccard
     weight_column: str = "logfoldchanges",  # column in markers_df for weights etc.
-    # === Proportion estimage: get_proportions_on_tissue ===
-    proportion_method: str = "nnls",     # 'nnls', 'ridge', 'elastic'
-    normalization_method: str = "unit",  # Options: 'unit', 'zscore',"l1"
-    regularization_alpha: float = 0.01,                  # regularization alpha
-    l1_ratio: float = 0.7,                # L1/L2 ratio for L1+L2 regularization
+    min_markers: int = 3,
+    fallback_auc: float = 0.0,
+    expression_threshold: float = 0.1,
+    top_n_markers: int | None = None,
+    recovery_power: float = 1.0,
+    drop_shared_markers: bool = False,
+    center_auc: bool = True,
+    ucell_max_rank: int | None = None,
+    ucell_negative_weight: float = 1.0,
+    ucell_marker_role_column: str = "marker_role",
     # === Evidence→likelihood mapping (lightweight, non-DL) ===
     evidence_to_likelihood: str = "softmax",  # {"row_normalize","softmax"}
-    softmax_tau: float = 1.0,             # softmax temperature
-    epsilon: float = 1e-12,               # numerical guard
+    softmax_tau: float = 1.0,                 # softmax temperature
+    epsilon: float = 1e-12,                   # numerical guard
+    # === Bayesian combination weights ===
+    prior_weight: float = 1.0,                # weight for phase 1 priors
+    likelihood_weight: float = 1.0,           # weight for phase 2 likelihoods
+    # === Optional presence gating by priors ===
+    apply_prior_presence_mask: bool = False,  # if True, priors gate likelihoods
+    prior_presence_threshold: float = 0.0,    # threshold on priors for presence mask
+    phase2_candidate_pruning: bool = False,
+    phase2_candidate_threshold: float = 0.0,
     # === Final assignment: assign_clusters_from_df ===
     results_column: str = "easydecon",
     assign_method: str = "max",           # {"max","hybrid","zmax"} per your implementation
     allow_multiple: bool = False,
     diagnostic=None,
     fold_change_threshold: float = 2.0,
+    minimum_evidence: float = 0.0,
+    tie_tolerance: float = 1e-12,
+    auto_marker_min: int = 20,
+    auto_marker_max: int = 100,
+    auto_marker_cumulative_fraction: float = 0.90,
+    auto_marker_relative_strength: float = 0.15,
+    auto_marker_padj_cap: float = 20.0,
+    auto_marker_min_detected_spots: int = 1,
 
 ):
+    validate_choice(
+        evidence_to_likelihood,
+        EVIDENCE_TO_LIKELIHOOD_METHODS,
+        "evidence_to_likelihood",
+    )
+    validate_positive(softmax_tau, "softmax_tau")
+    validate_positive(epsilon, "epsilon")
+    _validate_finite_nonnegative(fallback_auc, "fallback_auc")
+    _validate_finite_nonnegative(expression_threshold, "expression_threshold")
+    _validate_finite_nonnegative(recovery_power, "recovery_power")
+    _validate_finite_nonnegative(minimum_evidence, "minimum_evidence")
+    _validate_finite_nonnegative(tie_tolerance, "tie_tolerance")
+    validate_choice(marker_roles, MARKER_ROLE_MODES, "marker_roles")
+    validate_choice(
+        marker_role_inference,
+        MARKER_ROLE_INFERENCE_MODES,
+        "marker_role_inference",
+    )
+    _validate_finite_nonnegative(reference_min_log2fc, "reference_min_log2fc")
+    _validate_finite_nonnegative(
+        reference_presence_min_log2fc, "reference_presence_min_log2fc"
+    )
+    _validate_finite_nonnegative(
+        reference_negative_min_log2fc, "reference_negative_min_log2fc"
+    )
+    for value, name in (
+        (reference_min_detection, "reference_min_detection"),
+        (reference_min_detection_delta, "reference_min_detection_delta"),
+        (
+            reference_presence_min_detection_delta,
+            "reference_presence_min_detection_delta",
+        ),
+        (reference_negative_min_detection, "reference_negative_min_detection"),
+        (
+            reference_negative_min_detection_delta,
+            "reference_negative_min_detection_delta",
+        ),
+    ):
+        validate_probability_range(value, name)
+    _validate_optional_positive_integer(top_n_markers, "top_n_markers")
+    _validate_optional_positive_integer(ucell_max_rank, "ucell_max_rank")
+    _validate_finite_nonnegative(ucell_negative_weight, "ucell_negative_weight")
+    _validate_nonempty_string(ucell_marker_role_column, "ucell_marker_role_column")
+    if isinstance(min_markers, bool) or not isinstance(min_markers, int) or min_markers < 1:
+        raise ValueError("min_markers must be an integer greater than or equal to 1.")
+    if not isinstance(drop_shared_markers, bool):
+        raise ValueError("drop_shared_markers must be a bool.")
+    if not isinstance(center_auc, bool):
+        raise ValueError("center_auc must be a bool.")
+    if prior_weight < 0 or likelihood_weight < 0:
+        raise ValueError("prior_weight and likelihood_weight must be non-negative.")
+    if not isinstance(phase2_candidate_pruning, bool):
+        raise ValueError("phase2_candidate_pruning must be a bool.")
+    _validate_finite_nonnegative(
+        phase2_candidate_threshold, "phase2_candidate_threshold"
+    )
+    if phase2_candidate_pruning and prior_weight <= 0:
+        raise ValueError(
+            "phase2_candidate_pruning requires prior_weight > 0 because "
+            "candidate groups are derived from Phase 1 priors."
+        )
+    marker_genes_is_list = isinstance(marker_genes, list)
+    if phase2_candidate_pruning and marker_genes_is_list:
+        raise ValueError(
+            "phase2_candidate_pruning is not available for list-style "
+            "marker_genes workflows because Phase 1 does not produce "
+            "cell-type-specific priors."
+        )
+    if isinstance(top_n_genes, str) and top_n_genes != "auto":
+        raise ValueError(
+            "top_n_genes must be an integer greater than or equal to 1, "
+            "None, or 'auto'."
+        )
+
+    table = get_table(
+        sdata,
+        bin_size=bin_size,
+        table_key=table_key,
+        preferred_table_keys=preferred_table_keys,
+    )
+    original_celltype = celltype
+    original_gene_id_column = gene_id_column
+    resolved_prepared = prepare_markers(
+        adata=adata,
+        prepared_markers=prepared_markers,
+        markers_df=markers_df,
+        filename=filename,
+        source=marker_source,
+        marker_method=marker_method,
+        groupby=groupby,
+        marker_key=marker_key,
+        scanpy_method=scanpy_method,
+        layer=layer,
+        use_raw=use_raw,
+        reference=reference,
+        copy_adata=copy_adata,
+        rank_genes_groups_kwargs=rank_genes_groups_kwargs,
+        sample_col=sample_col,
+        min_cells_per_group=min_cells_per_group,
+        min_replicates_per_condition=min_replicates_per_condition,
+        deseq_alpha=deseq_alpha,
+        deseq_n_cpus=deseq_n_cpus,
+        deseq_quiet=deseq_quiet,
+        deseq_kwargs=deseq_kwargs,
+        deseq_stats_kwargs=deseq_stats_kwargs,
+        reference_min_cells=reference_min_cells,
+        reference_min_mean=reference_min_mean,
+        reference_min_log2fc=reference_min_log2fc,
+        reference_min_detection=reference_min_detection,
+        reference_min_detection_delta=reference_min_detection_delta,
+        reference_pseudocount=reference_pseudocount,
+        reference_contrast=reference_contrast,
+        marker_roles=marker_roles,
+        reference_presence_min_log2fc=reference_presence_min_log2fc,
+        reference_presence_min_detection_delta=reference_presence_min_detection_delta,
+        reference_negative_min_log2fc=reference_negative_min_log2fc,
+        reference_negative_min_detection=reference_negative_min_detection,
+        reference_negative_min_detection_delta=reference_negative_min_detection_delta,
+        marker_role_inference=marker_role_inference,
+        marker_role_inference_log2fc_min=log2fc_min,
+        celltype=celltype,
+        gene_id_column=gene_id_column,
+        verbose=verbose,
+    )
+    auto_marker_selection = top_n_genes == "auto"
+    phase_top_n = None if auto_marker_selection else top_n_genes
+    top_n_applied_by = (
+        "auto_spatial_marker_selector"
+        if auto_marker_selection
+        else "workflow_phase_resolver"
+    )
+    markers_df, selection_diagnostics = select_prepared_markers(
+        resolved_prepared,
+        gene_universe=table.var_names,
+        exclude_celltype=None,
+        top_n_genes="auto" if auto_marker_selection else None,
+        sort_by_column=sort_by_column,
+        ascending=ascending,
+        log2fc_min=log2fc_min,
+        pval_cutoff=pval_cutoff,
+        drop_ribosomal=drop_ribosomal,
+        drop_mitochondrial=drop_mitochondrial,
+        source=marker_source,
+        return_diagnostics=True,
+        spatial_table=table if auto_marker_selection else None,
+        auto_marker_min=auto_marker_min,
+        auto_marker_max=auto_marker_max,
+        auto_marker_cumulative_fraction=auto_marker_cumulative_fraction,
+        auto_marker_relative_strength=auto_marker_relative_strength,
+        auto_marker_padj_cap=auto_marker_padj_cap,
+        auto_marker_min_detected_spots=auto_marker_min_detected_spots,
+    )
+    marker_diagnostics = _build_marker_compat_diagnostics(
+        resolved_prepared,
+        markers_df,
+        table,
+        marker_method=marker_method,
+        groupby=groupby,
+        key=marker_key,
+        scanpy_method=scanpy_method,
+        marker_roles=marker_roles,
+        marker_role_inference=marker_role_inference,
+        prepared_markers_used=prepared_markers is not None,
+        selection_diagnostics=selection_diagnostics,
+        top_n_applied_by=top_n_applied_by,
+    )
+    if not isinstance(markers_df, pd.DataFrame):
+        raise ValueError("Resolved markers_df must be a pandas DataFrame.")
+    missing_marker_columns = {"group", "names"}.difference(markers_df.columns)
+    if missing_marker_columns:
+        raise ValueError(
+            "Resolved markers_df must contain canonical columns 'group' and "
+            f"'names'. Missing: {sorted(missing_marker_columns)}."
+        )
+    if markers_df["group"].nunique() == 0:
+        raise ValueError("Resolved markers_df contains no marker groups.")
+    if markers_df["names"].nunique() == 0:
+        raise ValueError("Resolved markers_df contains no marker genes.")
+
+    celltype = "group"
+    gene_id_column = "names"
+    phase1_markers_df, phase2_markers_df, marker_role_diagnostics = (
+        resolve_phase_marker_tables(
+            markers_df,
+            marker_roles=marker_roles,
+            method=method,
+            marker_role_column=ucell_marker_role_column,
+            top_n_genes=phase_top_n,
+            require_phase1=marker_genes is None,
+        )
+    )
+    combined_markers_df = pd.concat(
+        [phase1_markers_df, phase2_markers_df], ignore_index=False
+    )
+    if "marker_role" in combined_markers_df.columns:
+        combined_markers_df = combined_markers_df.drop_duplicates(
+            subset=["group", "names", "marker_role"], keep="first"
+        )
+        combined_markers_df.set_index("group", drop=False, inplace=True)
+    else:
+        combined_markers_df = combined_markers_df.drop_duplicates(
+            subset=["group", "names"], keep="first"
+        )
+        combined_markers_df.set_index("group", drop=False, inplace=True)
+    markers_df = combined_markers_df
+    phase1_marker_source = (
+        "marker_genes_override" if marker_genes is not None else "resolved_marker_roles"
+    )
+    phase1_markers = phase1_markers_df if marker_genes is None else marker_genes
+    if isinstance(phase1_markers, pd.DataFrame):
+        phase1_markers = phase1_markers.copy()
+        rename_columns = {}
+        if "group" not in phase1_markers and original_celltype in phase1_markers:
+            rename_columns[original_celltype] = "group"
+        if "names" not in phase1_markers and original_gene_id_column in phase1_markers:
+            rename_columns[original_gene_id_column] = "names"
+        phase1_markers.rename(columns=rename_columns, inplace=True)
 
     # -----------------------
     # Phase 1: Priors
     # -----------------------
+    phase1_performance = {}
     phase1_result = common_markers_gene_expression_and_filter(
-        sdata=sdata,
-        marker_genes=markers_df if marker_genes is None else marker_genes,
-        celltype=celltype,
-        gene_id_column=gene_id_column,
+        sdata=table,
+        marker_genes=phase1_markers,
+        celltype="group",
+        gene_id_column="names",
         exclude_group_names=exclude_group_names,
         bin_size=bin_size,
         aggregation_method=aggregation_method,
+        coverage_power=coverage_power,
         add_to_obs=True if marker_genes is not None else False,
         filtering_algorithm=filtering_algorithm,
         num_permutations=num_permutations,
@@ -61,9 +544,13 @@ def easydecon_workflow(
         subsample_size=subsample_size,
         subsample_signal_quantile=subsample_signal_quantile,
         permutation_gene_pool_fraction=permutation_gene_pool_fraction,
+        random_state=random_state,
         n_subs=n_subs,
         quantile=quantile,
-        parametric=parametric
+        parametric=parametric,
+        output_stat=phase1_output_stat,
+        verbose=verbose,
+        _diagnostics_out=phase1_performance,
     )
 
     if not isinstance(phase1_result, pd.DataFrame):
@@ -74,53 +561,85 @@ def easydecon_workflow(
     priors_row_sum = priors_df.sum(axis=1).replace(0, np.nan)
     priors_df = priors_df.div(priors_row_sum, axis=0).fillna(0)
 
+
+    prior_row_sums = priors_df.sum(axis=1)
+    informative_spots = prior_row_sums[prior_row_sums > 0].index
+
+    # initialize all spots to 0 (skip)
+    table.obs[mask_col] = 0
+
+    # mark informative spots as 1 (process in Phase 2)
+    table.obs.loc[
+        table.obs.index.intersection(informative_spots),
+        mask_col
+    ] = 1
+
     # -----------------------
     # Phase 2: Evidence
     # -----------------------
+    phase2_groups = phase2_markers_df["group"].drop_duplicates().astype(str).tolist()
+    phase2_candidate_mask = None
+    candidate_pruning_summary = _summarize_candidate_mask(
+        None,
+        enabled=False,
+        threshold=phase2_candidate_threshold,
+    )
+    if phase2_candidate_pruning:
+        phase2_candidate_mask = _build_phase2_candidate_mask(
+            priors_df,
+            phase2_groups=phase2_groups,
+            spatial_index=table.obs.index,
+            threshold=phase2_candidate_threshold,
+        )
+        candidate_pruning_summary = _summarize_candidate_mask(
+            phase2_candidate_mask,
+            enabled=True,
+            threshold=phase2_candidate_threshold,
+        )
+    phase2_performance = {}
     phase2_result = get_clusters_by_similarity_on_tissue(
-        sdata=sdata,
-        markers_df=markers_df,
+        sdata=table,
+        markers_df=phase2_markers_df,
         bin_size=bin_size,
-        gene_id_column=gene_id_column,
+        gene_id_column="names",
+        celltype="group",
         method=method,
         add_to_obs=False,
-        common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
+        #common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
+        common_group_name=mask_col,
         similarity_by_column=similarity_by_column,
         weight_column=weight_column,
-        lambda_param=lambda_param
+        lambda_param=lambda_param,
+        min_markers=min_markers,
+        fallback_auc=fallback_auc,
+        expression_threshold=expression_threshold,
+        top_n_markers=top_n_markers,
+        recovery_power=recovery_power,
+        drop_shared_markers=drop_shared_markers,
+        center_auc=center_auc,
+        ucell_max_rank=ucell_max_rank,
+        ucell_negative_weight=ucell_negative_weight,
+        ucell_marker_role_column=ucell_marker_role_column,
+        verbose=verbose,
+        _diagnostics_out=phase2_performance,
+        _candidate_mask=phase2_candidate_mask,
     )
     if not isinstance(phase2_result, pd.DataFrame):
         raise TypeError("Phase 2 result must be a pandas DataFrame (spots x clusters).")
 
-    evidence_df = phase2_result.copy()
-    if evidence_to_likelihood == "row_normalize":
-        min_per_row = evidence_df.min(axis=1)
-        needs_shift = (min_per_row < 0)
-        if needs_shift.any():
-            evidence_df = evidence_df.sub(min_per_row, axis=0)
-        evidence_df = evidence_df.clip(lower=0)
-        evidence_row_sum = evidence_df.sum(axis=1).replace(0, np.nan)
-        likelihoods_df = evidence_df.div(evidence_row_sum, axis=0).fillna(0)
+    likelihoods_df = _evidence_to_likelihood(
+        phase2_result,
+        method=evidence_to_likelihood,
+        softmax_tau=softmax_tau,
+        candidate_mask=phase2_candidate_mask if phase2_candidate_pruning else None,
+    )
 
-    elif evidence_to_likelihood == "softmax":
-        x = evidence_df.to_numpy(dtype=float)
-        row_max = np.nanmax(x, axis=1, keepdims=True)
-        logits = (x - row_max) / max(softmax_tau, epsilon)
-        np.exp(logits, out=logits)
-        row_sum = np.sum(logits, axis=1, keepdims=True)
-        row_sum[row_sum == 0] = np.nan
-        likelihoods_np = logits / row_sum
-        likelihoods_np = np.nan_to_num(likelihoods_np, nan=0.0)
-        likelihoods_df = pd.DataFrame(likelihoods_np, index=evidence_df.index, columns=evidence_df.columns)
-
-    else:
-        raise ValueError("evidence_to_likelihood must be one of {'row_normalize','softmax'}.")
 
     # -----------------------
     # Posterior combination
     # -----------------------
 
-    if not isinstance(marker_genes,list):
+    if not marker_genes_is_list:
         common_clusters = priors_df.columns.intersection(likelihoods_df.columns)
         if len(common_clusters) == 0:
             raise ValueError("No overlapping cluster columns between Phase 1 and Phase 2 outputs.")
@@ -133,106 +652,149 @@ def easydecon_workflow(
         priors_aligned = priors_aligned.loc[common_spots]
         likelihoods_aligned = likelihoods_aligned.loc[common_spots]
 
-        posterior_unnorm = priors_aligned * likelihoods_aligned
+        if phase2_candidate_pruning:
+            posterior_candidate_mask = _align_candidate_mask(
+                phase2_candidate_mask,
+                index=common_spots,
+                columns=common_clusters,
+            ).astype(float)
+            priors_aligned = priors_aligned * posterior_candidate_mask
+            likelihoods_aligned = likelihoods_aligned * posterior_candidate_mask
+
+        # Optional: use priors as a presence/absence gate on BOTH priors and likelihoods
+        if apply_prior_presence_mask:
+            presence_mask = (priors_aligned > prior_presence_threshold).astype(float)
+            priors_aligned = priors_aligned * presence_mask
+            likelihoods_aligned = likelihoods_aligned * presence_mask
+
+        # Guard against exact zeros before exponentiation,
+        # but keep true zeros from masking as zeros:
+        priors_safe = priors_aligned.replace(0, np.nan).clip(lower=epsilon).fillna(0)
+        likelihoods_safe = likelihoods_aligned.replace(0, np.nan).clip(lower=epsilon).fillna(0)
+
+        posterior_unnorm = (priors_safe ** prior_weight) * (likelihoods_safe ** likelihood_weight)
+
         row_sum = posterior_unnorm.sum(axis=1)
         zero_rows = (row_sum <= epsilon)
         if zero_rows.any():
-            posterior_unnorm.loc[zero_rows] = priors_aligned.loc[zero_rows]
+            # keep them as zero (no assignment from the posterior)
+            posterior_unnorm.loc[zero_rows] = 0.0
 
         posterior_row_sum = posterior_unnorm.sum(axis=1).replace(0, np.nan)
         posterior_df = posterior_unnorm.div(posterior_row_sum, axis=0).fillna(0)
+
+
+
+
     else:
-        print("Regular workflow, phase 1 used to find most likely postions and phase 2 to assign labels")
         posterior_df = None
 
     # -----------------------
     # Final assignment
     # -----------------------
 
+    assignment_df = posterior_df if posterior_df is not None and not marker_genes_is_list else phase2_result
     assigned_labels = assign_clusters_from_df(
-        sdata,
-        df=posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result,
+        table,
+        df=assignment_df,
         bin_size=bin_size,
         results_column=results_column,
         method=assign_method,
         allow_multiple=allow_multiple,
         diagnostic=diagnostic,
-        fold_change_threshold=fold_change_threshold
+        fold_change_threshold=fold_change_threshold,
+        minimum_evidence=minimum_evidence,
+        tie_tolerance=tie_tolerance,
+        verbose=verbose,
     )
 
-    try:
-        proportions_df= get_proportions_on_tissue(
-            sdata,
-            markers_df=markers_df,
-            bin_size=bin_size,
-            add_to_obs=False,
-            gene_id_column="names",
-            common_group_name="MarkerGroup" if isinstance(marker_genes,list) else None,
-            similarity_by_column=similarity_by_column,
-            method=proportion_method,
-            normalization_method=normalization_method,
-            alpha=regularization_alpha,
-            l1_ratio=l1_ratio,
-            verbose=True
+
+    diagnostics = {
+        "markers": marker_diagnostics,
+        "n_phase1_spots": int(phase1_result.shape[0]),
+        "n_phase1_celltypes": int(phase1_result.shape[1]),
+        "n_phase2_spots": int(phase2_result.shape[0]),
+        "n_phase2_celltypes": int(phase2_result.shape[1]),
+        "posterior_available": posterior_df is not None,
+        "assignment_matrix": (
+            "posterior_df" if posterior_df is not None else "phase2_result"
+        ),
+        "results_column": results_column,
+        "mask_col": mask_col,
+        "marker_roles": {
+            **marker_role_diagnostics,
+            "phase1_marker_source": phase1_marker_source,
+        },
+        "phase1": {
+            "filtering_algorithm": filtering_algorithm,
+            "aggregation_method": aggregation_method,
+            "coverage_power": coverage_power,
+            "alpha": alpha,
+            "num_permutations": num_permutations,
+            "n_subs": n_subs,
+            "permutation_gene_pool_fraction": permutation_gene_pool_fraction,
+            "random_state": random_state,
+            "performance": phase1_performance,
+        },
+        "phase2": {
+            "method": method,
+            "min_markers": min_markers,
+            "fallback_auc": fallback_auc,
+            "expression_threshold": expression_threshold,
+            "top_n_markers": top_n_markers,
+            "recovery_power": recovery_power,
+            "drop_shared_markers": drop_shared_markers,
+            "center_auc": center_auc,
+            "ucell_max_rank": ucell_max_rank,
+            "ucell_negative_weight": ucell_negative_weight,
+            "ucell_marker_role_column": ucell_marker_role_column,
+            "performance": {
+                **phase2_performance,
+                **candidate_pruning_summary,
+            },
+        },
+        "assignment": {
+            "method": assign_method,
+            "minimum_evidence": minimum_evidence,
+            "tie_tolerance": tie_tolerance,
+            "allow_multiple": allow_multiple,
+            "fold_change_threshold": fold_change_threshold,
+        },
+    }
+    diagnostics["markers"]["top_n_applied_by"] = top_n_applied_by
+    if method == "ucell":
+        informative_rows = (phase2_result.max(axis=1) > 0)
+        diagnostics["phase2"]["n_informative_rows"] = int(informative_rows.sum())
+        diagnostics["phase2"]["n_uninformative_rows"] = int((~informative_rows).sum())
+
+    if verbose:
+        print("Finished easydecon workflow.")
+        if posterior_df is None:
+            print(
+                "Posterior df is None because marker_genes was provided as a "
+                "list-style mask workflow."
             )
-    except:
-        print("Proportions could not be estimated, please check if similarity_by_column exists in the data frame...")
-        proportions_df = None
 
-    print("Finished!")
-    print("Posterior df and proportions can be None if the required columns or input parameters missing...")
-    return phase1_result, phase2_result, assigned_labels, posterior_df if posterior_df is not None and not isinstance(marker_genes,list) else phase2_result, proportions_df
-
-
-
-def get_clusters_expression_on_tissue(sdata,markers_df,common_group_name=None,
-                                      bin_size=8,gene_id_column="names",aggregation_method="mean",add_to_obs=True):
-
-    try:
-        table = sdata.tables[f"square_00{bin_size}um"]
-    except (AttributeError, KeyError):
-        table = sdata
-        
-    markers_df_tmp=markers_df[markers_df[gene_id_column].isin(table.var_names)] #just to be sure the genes are present in the spatial data
-
-    if common_group_name in table.obs.columns:
-        print(f"Processing spots with {common_group_name} != 0")
-        spots_with_expression = table.obs[table.obs[common_group_name] != 0].index
-    else:
-        print("common_group_name column not found in the table, processing all spots.")
-        spots_with_expression = table.obs.index
-
-    if aggregation_method=="mean":
-        compute = lambda x: np.mean(x, axis=1).values
-    elif aggregation_method=="median":
-        compute = lambda x: np.median(x, axis=1).values
-    elif aggregation_method=="sum":
-        compute = lambda x: np.sum(x, axis=1).values
-
-    # Preallocate DataFrame with zeros
-    all_spots = table.obs.index
-    all_clusters = markers_df_tmp.index.unique()
-    df = pd.DataFrame(0, index=all_spots, columns=all_clusters)
-    #tqdm._instances.clear()
-    
-    tqdm.pandas()
-
-    # Process only spots with expression
-    for spot in tqdm(spots_with_expression, desc='Processing spots',leave=True, position=0):
-        a = {}
-        for cluster in all_clusters:
-            genes = markers_df_tmp.loc[[cluster]][gene_id_column]
-            genes = [genes] if isinstance(genes, str) else genes.values
-            group_expression = compute(table[spot, genes].to_df())
-            a[cluster] = group_expression
-        
-        # Directly assign to preallocated DataFrame
-        df.loc[spot] = pd.DataFrame.from_dict(a, orient='index').transpose().values
-    
-    if add_to_obs:
-        print("Adding results to table.obs of sdata object")
-        table.obs.drop(columns=all_clusters,inplace=True,errors='ignore')
-        table.obs=pd.merge(table.obs, df, left_index=True, right_index=True)
-    
-    return df
-
+    if return_result_object:
+        return EasyDeconResult(
+        markers_df=markers_df,
+            phase1_result=phase1_result,
+            phase2_result=phase2_result,
+            assigned_labels=assigned_labels,
+            priors_df=priors_df,
+            likelihoods_df=likelihoods_df,
+            posterior_df=posterior_df,
+            assignment_df=assignment_df,
+            diagnostics=diagnostics,
+            prepared_markers=resolved_prepared,
+        )
+    result_tuple = (
+        phase1_result,
+        phase2_result,
+        assigned_labels,
+        priors_df,
+        assignment_df,
+    )
+    if return_diagnostics:
+        return (*result_tuple, diagnostics)
+    return result_tuple

@@ -1,0 +1,1 @@
+"""Lightweight benchmarks for easydecon."""

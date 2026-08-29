@@ -1,63 +1,69 @@
-<img src="easydecon-logo.png" alt="Logo" width=130 style="vertical-align: middle; margin-right: 10px;"/>  
+<img src="easydecon-logo.png" alt="easydecon logo" width="130" />
 
-[![PyPI version](https://badge.fury.io/py/easydecon.svg)](https://badge.fury.io/py/easydecon)  
-A package to analyze celltypes on high definition spatial profiling assays
+[![PyPI version](https://badge.fury.io/py/easydecon.svg)](https://badge.fury.io/py/easydecon)
 
-Installation
-------------
-It is recommended to install the package in a virtual environment or a Conda environment. To create a Conda environment, run the following command:
+# easydecon
 
-```bash
-conda create -n easydecon python=3.10.14
-conda activate easydecon
-```
+easydecon uses marker genes to deconvolve and assign cell types in spatial
+transcriptomics data.
 
-You can install from PyPi:
+## Installation
 
 ```bash
-pip install easydecon
+python -m pip install easydecon
 ```
 
-To install directly from GitHub using pip into the active environment, run the following command:
+For development and testing:
 
 ```bash
-pip install git+https://github.com/sinanugur/easydecon.git
+python -m pip install -e ".[test]"
 ```
 
-Overview
---------
-<img src="easydecon-overview.png" alt="Worfklow Overview"/>
+Optional extras:
 
-Absolute Minimal Example
----------------
+```bash
+python -m pip install -e ".[spatial]"  # SpatialData support
+python -m pip install -e ".[deseq]"    # pseudobulk PyDESeq2 markers
+python -m pip install -e ".[docs]"     # build the documentation
+```
+
+## Quickstart
+
+Start with a spatial AnnData table (or a SpatialData object) and a CSV or
+Excel marker file. The file needs `group` and `names` columns: `group` is the
+cell type and `names` is the marker gene. Gene names in the file must match
+the spatial table's `var_names`.
+
 ```python
-from easydecon.easydecon import *
-from easydecon.config import *
-from easydecon.extra import *
+import easydecon as ed
 
-#read your DESeq table into a markers_df
-#sdata is your VisiumHD file in SpatialData format or segmented AnnData object, assumed you QC and etc.
-markers_df=read_markers_dataframe(sdata,filename="scanpy_deseq_table.csv")
+result = ed.run_easydecon(
+    sdata=sdata,
+    filename="markers.csv",
+    return_result_object=True,
+    verbose=False,
+)
 
-#run easydecon
-ph1, ph2, assigned_labels, posterior_df, proportions_df= easydecon_workflow(sdata,markers_df=markers_df)
-
-#or setting prior genes
-ph1, ph2, assigned_labels, posterior_df, proportions_df= easydecon_workflow(sdata,markers_df=markers_df,marker_genes=["gene1","gene2","gene3"])
-
-`assigned_labels` will be added to sdata.obs and contain the celltype assignments
-`proportions_df` will contain the estimated proportions for each celltype
-
+print(result.posterior_df.head())
+print(result.assigned_labels.head())
+print(result.diagnostics)
 ```
 
-Usage and Documentation
------------------------
-You may find our example notebooks in the `notebooks` folder.
+`posterior_df` shows the relative support for each tested cell type. It is not
+necessarily an absolute cell-fraction estimate. `assigned_labels` gives a
+single label per location, so it does not retain that uncertainty. Review the
+diagnostics before using the assignments downstream.
 
-- Demo notebook for a single-cell Anndata object (demo)[https://github.com/sinanugur/easydecon/blob/main/notebooks/demo.ipynb]
-- Demo notebook for macrophage markers (demo_macrophage)[https://github.com/sinanugur/easydecon/blob/main/notebooks/demo_macrophage.ipynb]
-- Minimal example notebook (minimal)[https://github.com/sinanugur/easydecon/blob/main/notebooks/demo_minimal_example.ipynb]
+## Documentation
 
-Segmentation Example
---------------------
-- Segmentation with bin2cell example [https://github.com/sinanugur/easydecon/blob/main/notebooks/demo_bin2cell_minimal.ipynb]
+Begin with [docs/index.rst](docs/index.rst). Useful guides include:
+
+* [installation and quickstart](docs/usage.rst)
+* [workflow concepts](docs/workflow.md)
+* [marker inputs](docs/marker_inputs.md)
+* [results and interpretation](docs/results.md)
+* [Scanpy markers](docs/scanpy_markers.md)
+* [reference-profile markers](docs/reference_markers.md)
+* [Phase 1](docs/phase1.md) and [Phase 2](docs/phase2.md)
+* [refinement](docs/refinement.md)
+* [visualization](docs/visualization.md)

@@ -1,0 +1,81 @@
+# Synthetic validation
+
+The synthetic validation suite compares supported easydecon configurations on
+deterministic data where generating labels and marker assumptions are known. It
+is intended for implementation validation and smoke testing. It does not
+establish biological superiority.
+
+## Run
+
+```bash
+python benchmarks/run_synthetic_validation.py \
+    --scenarios clean,dropout,shared_markers \
+    --output-dir validation_output
+```
+
+The runner writes:
+
+* `validation_metrics.csv`
+* `validation_summary.csv`
+* `validation_metadata.json`
+* optional PNG plots when Matplotlib is available
+
+Rows for failed configurations are retained with failure metadata where the
+runner can capture them, so inspect both metrics and metadata.
+
+## Scenarios
+
+* `clean`: strong unique markers, low dropout, no contamination.
+* `dropout`: spatial marker dropout.
+* `shared_markers`: more shared marker signal between groups.
+* `library_shift`: location-to-location library-size variation.
+* `contamination`: competing-group contamination and anti-marker signal.
+* `mixed`: dominant plus secondary simulated group; `true_scores` stores the
+  generating weights.
+* `difficult`: dropout, shared markers, contamination, library shift, and
+  weaker marker effects.
+
+## Configurations
+
+Default configurations should compare method families rather than frame a
+single scorer as the target. Representative Phase 2 methods include weighted
+Jaccard, cosine, AUC, and UCell-like scoring. Known-marker configurations are
+labelled `marker_source="known"`; they isolate scoring behavior and should not
+be described as inferred markers.
+
+Configuration tables should include a `phase2_method` column so weighted
+overlap, vector-profile, rank-based, and negative-marker-capable methods can
+be compared directly. Do not declare a winner without dataset-specific
+evidence.
+
+## Metrics
+
+Assignment metrics report coverage, assigned accuracy, overall accuracy, macro
+precision/recall/F1, and confusion counts. Coverage and assigned accuracy must
+be interpreted together: high assigned accuracy with low coverage means the
+method abstained often.
+
+Ranking metrics use `posterior_df` when available, otherwise a row-normalized
+non-negative assignment matrix. They include top-1 score accuracy, reciprocal
+rank, true-group score, max score, and entropy. These measure relative support
+among tested groups, not calibrated probabilities.
+
+When posterior rows sum to one, the suite can report multiclass Brier score and
+negative log likelihood. In the `mixed` scenario, composition MAE/RMSE compare
+posterior support with simulation weights in `true_scores`; this is not a claim
+that easydecon posteriors are absolute cell fractions.
+
+## Candidate-pruning equivalence
+
+Zero-threshold candidate pruning derives Phase 2 candidates from positive Phase
+1 priors and is compared with an unpruned run for posterior and assignment
+equivalence. Positive thresholds are intentionally more aggressive and can
+legitimately change results.
+
+## Reproducibility and runtime
+
+The generator uses `numpy.random.default_rng(random_state)`, deterministic gene
+and group names, and records versions and command arguments in
+`validation_metadata.json`. Biological metrics should be reproducible for
+identical arguments. Runtime depends on hardware, package versions, sparse
+matrix behavior, and optional dependencies.
