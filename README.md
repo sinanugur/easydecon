@@ -5,12 +5,7 @@
 # easydecon
 
 easydecon uses marker genes to deconvolve and assign cell types in spatial
-transcriptomics data. It also includes diagnostics and tools for working with
-spatial niches. It works directly with AnnData tables; SpatialData support is
-available as an optional extra.
-
-easydecon is currently an alpha release (`0.1.6a0`). The API is close to its
-release shape, but check the documentation before using it in production.
+transcriptomics data.
 
 ## Installation
 
