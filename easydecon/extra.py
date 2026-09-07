@@ -209,7 +209,7 @@ def easydecon_workflow(
     groupby: str | None = None,
     sample_col: str | None = None,
     marker_key: str = "rank_genes_groups",
-    top_n_genes: int | str | None = 60,
+    top_n_genes: int | str | None = "auto",
     sort_by_column: str = "scores",
     ascending: bool = False,
     log2fc_min: float = 0.25,
@@ -247,24 +247,24 @@ def easydecon_workflow(
     reference_negative_min_detection_delta: float = 0.05,
     marker_role_inference: str = "none",
     verbose: bool = True,
-    return_result_object: bool = False,
+    return_result_object: bool = True,
     return_diagnostics: bool = False,
     # === Phase 1 (priors): common_markers_gene_expression_and_filter ===
-    aggregation_method: str = "sum",      # {"sum","mean","median","coverage"}
+    aggregation_method: str = "coverage", # {"sum","mean","median","coverage"}
     coverage_power: float = 0.5,           # coverage aggregation penalty exponent
     filtering_algorithm: str = "permutation",  # {"permutation","quantile"}
-    num_permutations: int = 5000,         # number of permutations
+    num_permutations: int = 1000,         # number of permutations
     parametric: bool = True,              # parametric or empirical quantile
-    alpha: float = 0.01,                  # permutation cutoff level
+    alpha: float = 0.05,                  # permutation cutoff level
     subsample_size: int = 25000,          # subsample size for permutation
     subsample_signal_quantile: float = 0,   #permutation param, between 0 and 1, if 0.1, 10% of the bins with the lowest and highest expression will be discarded
     permutation_gene_pool_fraction: float | str = "auto",  # variance-ranked null pool fraction or automatic size
     random_state: int | None = 10,            # reproducible Phase 1 permutation sampling
     n_subs: int = 5,                      # permutation: number of subsamples
     quantile: float = 0.7,                # used only if filtering_algorithm="quantile"
-    phase1_output_stat: str = "expression",  # NEW: {"expression","minus_log10_p"}
+    phase1_output_stat: str = "minus_log10_p",  # {"expression","minus_log10_p"}
     # === Phase 2 (evidence): get_clusters_by_similarity_on_tissue ===
-    method: str = "wjaccard",             # {"wjaccard","cosine","spearman","euclidean","jaccard","overlap", ...}
+    method: str = "ucell",                # {"ucell","wjaccard","cosine","spearman","euclidean","jaccard","overlap", ...}
     similarity_by_column: str = "logfoldchanges",  # 
     lambda_param: float = 0.25,           # lambda parameter wjaccard
     weight_column: str = "logfoldchanges",  # column in markers_df for weights etc.
@@ -284,7 +284,7 @@ def easydecon_workflow(
     epsilon: float = 1e-12,                   # numerical guard
     # === Bayesian combination weights ===
     prior_weight: float = 1.0,                # weight for phase 1 priors
-    likelihood_weight: float = 1.0,           # weight for phase 2 likelihoods
+    likelihood_weight: float = 3.0,           # weight for phase 2 likelihoods
     # === Optional presence gating by priors ===
     apply_prior_presence_mask: bool = False,  # if True, priors gate likelihoods
     prior_presence_threshold: float = 0.0,    # threshold on priors for presence mask
@@ -298,10 +298,10 @@ def easydecon_workflow(
     fold_change_threshold: float = 2.0,
     minimum_evidence: float = 0.0,
     tie_tolerance: float = 1e-12,
-    auto_marker_min: int = 20,
-    auto_marker_max: int = 100,
-    auto_marker_cumulative_fraction: float = 0.90,
-    auto_marker_relative_strength: float = 0.15,
+    auto_marker_min: int = 30,
+    auto_marker_max: int = 120,
+    auto_marker_cumulative_fraction: float = 0.95,
+    auto_marker_relative_strength: float = 0.05,
     auto_marker_padj_cap: float = 20.0,
     auto_marker_min_detected_spots: int = 1,
 

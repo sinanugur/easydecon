@@ -1,7 +1,7 @@
 # Phase 2: marker-profile similarity
 
-Weighted Jaccard is the default Phase 2 method, but easydecon supports several
-method families. No method should be assumed universally superior.
+UCell-like scoring is the default Phase 2 method, but easydecon supports
+several method families. No method should be assumed universally superior.
 
 Phase 2 is implemented by `get_clusters_by_similarity_on_tissue`. It scores
 each processed spatial location against marker groups and returns
@@ -13,14 +13,14 @@ Supported values are defined in `SIMILARITY_METHODS`.
 
 | Method | Family | Uses marker weights | Uses full expression row or marker union | Supports negative markers | Typical use | Main caveat |
 | --- | --- | --- | --- | --- | --- | --- |
-| `wjaccard` | weighted marker overlap | yes | full expression row | no | default starting method for weighted marker tables | depends on marker-weight quality and denominator includes non-marker expressed genes |
+| `wjaccard` | weighted marker overlap | yes | full expression row | no | weighted DE-table alternative | depends on marker-weight quality and denominator includes non-marker expressed genes |
 | `jaccard` | set overlap | no | full expression row | no | binary expressed-gene and marker-set comparisons | non-marker expressed genes affect the denominator |
 | `overlap` | set overlap | no | full expression row | no | marker recovery as an overlap coefficient | ignores marker weights and denominator differs from Jaccard |
 | `cosine` | vector profile | marker reference values | marker union | no | profile-vector comparisons | sensitive to marker scaling and sparsity |
 | `correlation` | vector profile | marker reference values | marker union | no | rank-style profile comparisons | implemented with Spearman correlation and a detected-marker fraction factor |
 | `euclidean` | vector profile | marker reference values | marker union | no | distance-style profile comparisons | distance is converted to `1 / (1 + distance)` |
 | `auc` | rank based | rank/order only | marker union | no | within-location positive-marker rank evidence | does not interpret negative marker roles |
-| `ucell` | rank based | role-aware ordering | marker union | yes | rank evidence with anti-marker subtraction | not the official UCell implementation and not the default |
+| `ucell` | rank based | role-aware ordering | marker union | yes | default rank evidence with anti-marker subtraction | not the official UCell implementation |
 | `sum` | simple aggregation | no | marker union | no | transparent marker-expression baseline | sensitive to marker number and expression scale |
 | `mean` | simple aggregation | no | marker union | no | transparent marker-expression baseline | sensitive to scaling and marker selection |
 | `median` | simple aggregation | no | marker union | no | robust marker-expression baseline | often zero for sparse marker sets |
@@ -31,7 +31,7 @@ exclude negative rows through marker-role routing.
 
 ## Weighted marker-overlap family
 
-`method="wjaccard"` is the package default. It compares the positive target
+`method="wjaccard"` is a supported weighted-overlap alternative. It compares the positive target
 expression row with weighted marker membership. When `weight_column` is
 available, marker weights are normalized within each group. When explicit
 weights are absent, ranked fallback weights are created with `lambda_param`.
@@ -59,7 +59,6 @@ result = ed.run_easydecon(
     markers_df=markers_df,
     filtering_algorithm="permutation",
     method="wjaccard",
-    return_result_object=True,
 )
 ```
 
@@ -104,8 +103,8 @@ in UCell-like Phase 2. It supports `ucell_max_rank`,
 `ucell_negative_weight`, `min_markers`, `recovery_power`,
 `expression_threshold`, `top_n_markers`, and `drop_shared_markers`.
 
-UCell-like scoring is useful when rank robustness or anti-marker evidence is
-desired. It is not the general default and is not guaranteed to outperform
+UCell-like scoring is the workflow default when rank robustness or anti-marker
+evidence is desired. It is not guaranteed to outperform
 weighted Jaccard, AUC, cosine, or other supported methods. See
 [UCell-like Phase 2 scoring](ucell.md) for the technical subguide.
 
@@ -125,7 +124,8 @@ posterior interpretation.
 
 ## Choosing a Phase 2 method
 
-* Start with weighted Jaccard for ordinary weighted DE marker tables.
+* Start with UCell-like scoring for the default role-aware workflow.
+* Use weighted Jaccard for ordinary weighted DE marker tables.
 * Use cosine or correlation for profile-vector comparisons.
 * Use AUC or UCell-like scoring for within-location rank evidence.
 * Use UCell-like scoring when negative markers are available.

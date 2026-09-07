@@ -364,6 +364,7 @@ def test_workflow_phase2_performance_diagnostics():
         _table(),
         markers_df=_markers(),
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="sum",
         return_result_object=True,
         verbose=False,

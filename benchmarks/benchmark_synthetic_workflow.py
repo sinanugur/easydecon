@@ -39,6 +39,9 @@ def run_benchmark(
         for repeat_index in range(1, repeat + 1):
             run_sdata = sdata.copy()
             start = perf_counter()
+            workflow_kwargs = {}
+            if filtering_algorithm == "quantile":
+                workflow_kwargs["phase1_output_stat"] = "expression"
             result = ed.run_easydecon(
                 sdata=run_sdata,
                 markers_df=markers_df,
@@ -46,6 +49,7 @@ def run_benchmark(
                 method=method,
                 return_result_object=True,
                 verbose=False,
+                **workflow_kwargs,
             )
             runtime_seconds = perf_counter() - start
             assignment_column = result.diagnostics.get("results_column")

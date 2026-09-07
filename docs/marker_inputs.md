@@ -45,6 +45,25 @@ Aliases `marker_method="deseq2"` and `"pseudobulk_deseq2"` normalize to
 `"pydeseq2"`. Alias `marker_method="rctd_like"` normalizes to `"reference"` for
 compatibility; examples use `"reference"`.
 
+## Signed DE marker preparation
+
+```python
+prepared_markers = ed.prepare_markers(
+    filename="pelka_toplevel_deseq_table.csv",
+    source="toplevel_markers",
+    marker_role_inference="signed",
+    marker_role_inference_log2fc_min=0.25,
+    marker_roles="shared",
+)
+```
+
+`"signed"` infers positive and negative marker roles from signed
+differential-expression log fold changes while preserving explicit
+`marker_role` values. `"scanpy_signed"` remains a legacy compatibility alias.
+With `marker_roles="shared"`, the same prepared DE table is reused by both
+phases: Phase 1 uses positive/presence-style evidence, and UCell can also use
+negative markers for discrimination.
+
 ## Generated-marker workflow examples
 
 Scanpy-generated markers:
@@ -55,9 +74,6 @@ result = ed.run_easydecon(
     adata=sc_adata,
     groupby="cell_type",
     marker_method="scanpy",
-    filtering_algorithm="permutation",
-    method="wjaccard",
-    return_result_object=True,
 )
 ```
 
@@ -76,7 +92,6 @@ prepared = ed.prepare_markers(
 result = ed.run_easydecon(
     sdata,
     prepared_markers=prepared,
-    return_result_object=True,
 )
 
 selected = ed.select_prepared_markers(
@@ -87,8 +102,8 @@ selected = ed.select_prepared_markers(
 
 ## Automatic spatial marker selection
 
-`top_n_genes="auto"` is an opt-in, deterministic alternative to a fixed marker
-count. It keeps `PreparedMarkers.raw_markers_df` reusable and performs adaptive
+`top_n_genes="auto"` is the default deterministic marker-selection mode. It
+keeps `PreparedMarkers.raw_markers_df` reusable and performs adaptive
 selection only after intersecting markers with the target spatial table and
 applying the normal log-fold-change, adjusted-p-value, mitochondrial, and
 ribosomal filters.
@@ -98,13 +113,12 @@ result = ed.run_easydecon(
     sdata=sdata,
     prepared_markers=prepared,
     top_n_genes="auto",
-    auto_marker_min=20,
-    auto_marker_max=100,
-    auto_marker_cumulative_fraction=0.90,
-    auto_marker_relative_strength=0.15,
+    auto_marker_min=30,
+    auto_marker_max=120,
+    auto_marker_cumulative_fraction=0.95,
+    auto_marker_relative_strength=0.05,
     auto_marker_padj_cap=20.0,
     auto_marker_min_detected_spots=1,
-    return_result_object=True,
 )
 ```
 

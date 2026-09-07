@@ -184,7 +184,7 @@ def summarize_easydecon_result(
     if any(not hasattr(result, attribute) for attribute in required_attributes):
         raise TypeError(
             "result must be an EasyDeconResult-like object returned by "
-            "easydecon_workflow(..., return_result_object=True)."
+            "easydecon_workflow(...)."
         )
 
     markers_df = result.markers_df

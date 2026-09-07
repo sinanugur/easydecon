@@ -3,7 +3,7 @@
 `EasyDeconResult` is returned by:
 
 ```python
-result = ed.run_easydecon(..., return_result_object=True)
+result = ed.run_easydecon(...)
 ```
 
 | Field | Shape/type | Meaning | Typical use |

@@ -271,6 +271,7 @@ def test_signed_deseq_roles_route_to_ucell_and_non_ucell_workflows(monkeypatch):
         "marker_role_inference": "signed",
         "marker_roles": "shared",
         "filtering_algorithm": "quantile",
+        "phase1_output_stat": "expression",
         "min_markers": 1,
         "top_n_genes": None,
         "pval_cutoff": 1.0,

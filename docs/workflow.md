@@ -40,9 +40,9 @@ See [Phase 1](phase1.md).
 Phase 2 measures marker-profile similarity or marker-rank evidence at spatial
 locations selected by the Phase 1 row mask. It produces `phase2_result`, then
 maps the evidence into `likelihoods_df` using `softmax` or `row_normalize`.
-Weighted Jaccard is the default Phase 2 implementation choice; other supported
-methods are useful for vector-profile, set-overlap, rank-based, simple
-aggregation, and diagnostic workflows.
+UCell-like scoring is the default Phase 2 implementation choice; other
+supported methods are useful for vector-profile, set-overlap, rank-based,
+simple aggregation, and diagnostic workflows.
 
 See [Phase 2](phase2.md).
 

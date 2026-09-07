@@ -23,7 +23,7 @@ def test_root_readme_primary_quickstart_uses_defaults():
 
 def test_usage_positions_permutation_as_standard_phase1():
     usage = (DOCS / "usage.rst").read_text(encoding="utf-8").casefold()
-    assert "standard phase 1 permutation workflow" in usage
+    assert "phase 1 permutation" in usage
     assert "fast exploratory shortcut" in usage
 
 
@@ -40,18 +40,15 @@ def test_phase2_covers_and_positions_methods():
     phase2_words = " ".join(phase2.split())
     for method in _validation.SIMILARITY_METHODS:
         assert f"`{method}`" in phase2
-    assert "Weighted Jaccard is the default Phase 2 method" in phase2_words
-    assert (
-        "UCell-like scoring is useful when rank robustness or anti-marker evidence is desired"
-        in phase2_words
-    )
+    assert "UCell-like scoring is the default Phase 2 method" in phase2_words
+    assert "UCell-like scoring is the workflow default" in phase2_words
 
 
-def test_primary_refinement_and_pruning_examples_do_not_require_ucell():
+def test_primary_refinement_example_uses_the_default_ucell_workflow():
     candidate = (DOCS / "candidate_pruning.md").read_text(encoding="utf-8")
     refinement = (DOCS / "refinement.md").read_text(encoding="utf-8")
-    assert candidate.index('method="wjaccard"') < candidate.find('method="ucell"') or 'method="ucell"' not in candidate
-    assert refinement.index('method="wjaccard"') < refinement.index('method="ucell"')
+    assert 'method="wjaccard"' in candidate
+    assert refinement.index('method="ucell"') < refinement.index('method="wjaccard"')
 
 
 def test_ucell_not_under_advanced_workflows_toctree():

@@ -1,9 +1,11 @@
 import anndata as ad
+import inspect
 import numpy as np
 import pandas as pd
 import pytest
 import scanpy as sc
 
+import easydecon as ed
 import easydecon.extra as extra_module
 from easydecon.config import config, set_batch_size, set_n_jobs
 from easydecon.easydecon import _select_unique_winner
@@ -147,6 +149,8 @@ def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
         markers_df=workflow_markers,
         marker_genes=marker_genes,
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
+        aggregation_method="sum",
         quantile=0.85,
         method="jaccard",
         results_column="easydecon_test",
@@ -154,6 +158,7 @@ def test_easydecon_workflow_basic(table_subset, workflow_markers, monkeypatch):
         top_n_genes=None,
         log2fc_min=-np.inf,
         pval_cutoff=1.0,
+        return_result_object=False,
     )
 
     assert calls["phase1"] == 1
@@ -188,7 +193,9 @@ def test_easydecon_workflow_old_tuple_return_with_markers_df(
         small_spatial_table,
         small_markers,
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
+        return_result_object=False,
         verbose=False,
     )
 
@@ -203,8 +210,8 @@ def test_easydecon_workflow_return_result_object(
         small_spatial_table,
         small_markers,
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
-        return_result_object=True,
         verbose=False,
     )
 
@@ -221,6 +228,27 @@ def test_easydecon_workflow_return_result_object(
     assert {"group", "names"}.issubset(result.markers_df.columns)
 
 
+def test_public_workflow_defaults_match_the_recommended_profile():
+    parameters = inspect.signature(ed.run_easydecon).parameters
+    expected = {
+        "top_n_genes": "auto",
+        "auto_marker_min": 30,
+        "auto_marker_max": 120,
+        "auto_marker_cumulative_fraction": 0.95,
+        "auto_marker_relative_strength": 0.05,
+        "aggregation_method": "coverage",
+        "num_permutations": 1000,
+        "alpha": 0.05,
+        "phase1_output_stat": "minus_log10_p",
+        "method": "ucell",
+        "prior_weight": 1.0,
+        "likelihood_weight": 3.0,
+        "return_result_object": True,
+    }
+
+    assert {name: parameters[name].default for name in expected} == expected
+
+
 def test_easydecon_workflow_with_adata_scanpy_markers(small_spatial_table):
     result = extra_module.easydecon_workflow(
         sdata=small_spatial_table,
@@ -228,6 +256,7 @@ def test_easydecon_workflow_with_adata_scanpy_markers(small_spatial_table):
         groupby="cell_type",
         marker_method="scanpy",
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
         return_result_object=True,
         verbose=False,
@@ -246,6 +275,7 @@ def test_easydecon_workflow_with_marker_genes_list_keeps_mask_workflow(
         small_markers,
         marker_genes=["G1", "G2"],
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
         return_result_object=True,
         verbose=False,
@@ -262,7 +292,9 @@ def test_easydecon_workflow_return_diagnostics_tuple(
         small_spatial_table,
         small_markers,
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
+        return_result_object=False,
         return_diagnostics=True,
         verbose=False,
     )
@@ -286,6 +318,7 @@ def test_easydecon_workflow_with_pydeseq2_markers(small_spatial_table):
         min_replicates_per_condition=2,
         deseq_n_cpus=1,
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
         return_result_object=True,
         verbose=False,

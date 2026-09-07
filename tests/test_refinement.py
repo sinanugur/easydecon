@@ -5,6 +5,7 @@ import pytest
 
 import easydecon as ed
 import easydecon.extra as extra_module
+import easydecon.refinement as refinement_module
 from easydecon.config import config, set_batch_size, set_n_jobs
 from easydecon.extra import EasyDeconResult
 from easydecon.refinement import RefinedGroupResult
@@ -129,6 +130,7 @@ def test_refine_group_full_runs_phase1_and_phase2(
         markers_df=subtype_markers,
         mode="full",
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
         min_markers=1,
         log2fc_min=-np.inf,
@@ -139,6 +141,90 @@ def test_refine_group_full_runs_phase1_and_phase2(
     assert isinstance(refined.child_result, EasyDeconResult)
     assert refined.diagnostics["child_phase1_ran"] is True
     assert refined.child_result.posterior_df is not None
+
+
+def test_refine_group_full_defaults_and_overrides(monkeypatch, spatial_table, parent_result):
+    captured = {}
+
+    def fake_workflow(sdata, **kwargs):
+        captured.update(kwargs)
+        index = sdata.obs.index
+        matrix = pd.DataFrame({"Child": np.ones(len(index))}, index=index)
+        return EasyDeconResult(
+            markers_df=pd.DataFrame({"group": ["Child"], "names": ["G1"]}),
+            phase1_result=matrix,
+            phase2_result=matrix,
+            assigned_labels=pd.DataFrame(index=index),
+            priors_df=matrix,
+            likelihoods_df=matrix,
+            posterior_df=matrix,
+            assignment_df=matrix,
+            diagnostics={"markers": {}, "marker_roles": {}, "phase2": {"performance": {}}},
+        )
+
+    monkeypatch.setattr(refinement_module, "easydecon_workflow", fake_workflow)
+    refined = ed.refine_group(
+        spatial_table,
+        parent_result=parent_result,
+        parent_group="Myeloid",
+        markers_df=pd.DataFrame({"group": ["Child"], "names": ["G1"]}),
+        verbose=False,
+    )
+
+    assert refined.mode == "full"
+    assert refined.parent_scores.equals(parent_result.posterior_df["Myeloid"])
+    assert {key: captured[key] for key in (
+        "top_n_genes", "auto_marker_min", "auto_marker_max",
+        "auto_marker_cumulative_fraction", "auto_marker_relative_strength",
+        "filtering_algorithm", "phase1_output_stat", "aggregation_method",
+        "coverage_power",
+        "alpha", "num_permutations", "n_subs", "method", "prior_weight",
+        "likelihood_weight",
+    )} == {
+        "top_n_genes": "auto", "auto_marker_min": 10, "auto_marker_max": 60,
+        "auto_marker_cumulative_fraction": 0.95,
+        "auto_marker_relative_strength": 0.05,
+        "filtering_algorithm": "permutation",
+        "phase1_output_stat": "minus_log10_p", "aggregation_method": "coverage",
+        "coverage_power": 0.5,
+        "alpha": 0.01, "num_permutations": 1000, "n_subs": 5,
+        "method": "ucell", "prior_weight": 1.0, "likelihood_weight": 3.0,
+    }
+
+
+def test_refine_group_full_defaults_allow_user_overrides(
+    monkeypatch, spatial_table, parent_result
+):
+    captured = {}
+
+    def fake_workflow(sdata, **kwargs):
+        captured.update(kwargs)
+        index = sdata.obs.index
+        matrix = pd.DataFrame({"Child": np.ones(len(index))}, index=index)
+        return EasyDeconResult(
+            markers_df=pd.DataFrame(), phase1_result=matrix, phase2_result=matrix,
+            assigned_labels=pd.DataFrame(index=index), priors_df=matrix,
+            likelihoods_df=matrix, posterior_df=matrix, assignment_df=matrix,
+            diagnostics={"markers": {}, "marker_roles": {}, "phase2": {"performance": {}}},
+        )
+
+    monkeypatch.setattr(refinement_module, "easydecon_workflow", fake_workflow)
+    refined = ed.refine_group(
+        spatial_table,
+        parent_result=parent_result,
+        parent_group="Myeloid",
+        markers_df=pd.DataFrame({"group": ["Child"], "names": ["G1"]}),
+        parent_source="priors",
+        method="wjaccard",
+        alpha=0.05,
+        auto_marker_max=100,
+        verbose=False,
+    )
+
+    assert refined.parent_scores.equals(parent_result.priors_df["Myeloid"])
+    assert captured["method"] == "wjaccard"
+    assert captured["alpha"] == 0.05
+    assert captured["auto_marker_max"] == 100
 
 
 def test_refinement_is_restricted_to_parent_positive_locations(
@@ -265,6 +351,7 @@ def test_same_output_shape_for_both_modes(
         markers_df=subtype_markers,
         mode="full",
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="jaccard",
         min_markers=1,
         log2fc_min=-np.inf,

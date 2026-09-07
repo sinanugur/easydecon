@@ -45,6 +45,7 @@ def main(
             groupby="cell_type",
             marker_method="scanpy",
             filtering_algorithm="quantile",
+            phase1_output_stat="expression",
             method="auc",
             return_result_object=True,
             verbose=False,

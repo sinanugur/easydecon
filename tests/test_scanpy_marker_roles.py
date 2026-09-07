@@ -403,7 +403,7 @@ def test_workflow_always_reads_with_top_n_none(monkeypatch):
     extra_module.easydecon_workflow(table, markers_df=_signed_markers(), marker_roles="phase_specific", verbose=False)
 
     assert len(prepare_calls) == 2
-    assert select_calls == [None, None]
+    assert select_calls == ["auto", "auto"]
 
 
 def test_scanpy_signed_inference_phase_specific_raises_helpful_error():
@@ -414,6 +414,7 @@ def test_scanpy_signed_inference_phase_specific_raises_helpful_error():
             marker_role_inference="scanpy_signed",
             marker_roles="phase_specific",
             filtering_algorithm="quantile",
+            phase1_output_stat="expression",
             verbose=False,
         )
 
@@ -427,6 +428,7 @@ def test_scanpy_ucell_signed_inference_routes_negative_markers(monkeypatch):
         marker_roles="shared",
         method="ucell",
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         min_markers=1,
         log2fc_min=0.25,
         pval_cutoff=1.0,
@@ -517,9 +519,10 @@ def test_phase2_refinement_forwards_marker_role_inference(monkeypatch):
         "Parent",
         markers_df=_signed_markers(),
         marker_role_inference="scanpy_signed",
+        mode="phase2",
         method="ucell",
         verbose=False,
     )
 
     assert captured["marker_role_inference"] == "scanpy_signed"
-    assert captured["selection_top_n_genes"] is None
+    assert captured["selection_top_n_genes"] == "auto"

@@ -167,8 +167,8 @@ def refine_group(
     prepared_markers=None,
     filename=None,
     adata=None,
-    mode="phase2",
-    parent_source="priors",
+    mode="full",
+    parent_source="posterior",
     parent_threshold=0.0,
     results_column=None,
     bin_size=8,
@@ -225,6 +225,30 @@ def refine_group(
     _pop_blocked_workflow_kwargs(workflow_kwargs)
     workflow_kwargs.setdefault("marker_roles", marker_roles)
     workflow_kwargs.setdefault("marker_role_inference", marker_role_inference)
+    for key, value in {
+        "top_n_genes": "auto",
+        "log2fc_min": 0.25,
+        "pval_cutoff": 0.05,
+        "drop_ribosomal": True,
+        "drop_mitochondrial": True,
+        "auto_marker_min": 10,
+        "auto_marker_max": 60,
+        "auto_marker_cumulative_fraction": 0.95,
+        "auto_marker_relative_strength": 0.05,
+        "filtering_algorithm": "permutation",
+        "phase1_output_stat": "minus_log10_p",
+        "aggregation_method": "coverage",
+        "coverage_power": 0.5,
+        "alpha": 0.01,
+        "parametric": True,
+        "permutation_gene_pool_fraction": "auto",
+        "num_permutations": 1000,
+        "n_subs": 5,
+        "method": "ucell",
+        "prior_weight": 1.0,
+        "likelihood_weight": 3.0,
+    }.items():
+        workflow_kwargs.setdefault(key, value)
     workflow_kwargs.setdefault(
         "reference_presence_min_log2fc", reference_presence_min_log2fc
     )
@@ -299,19 +323,19 @@ def refine_group(
     else:
         child_result = None
         marker_kwargs = _read_marker_kwargs(workflow_kwargs)
-        requested_top_n = marker_kwargs.pop("top_n_genes", 60)
+        requested_top_n = marker_kwargs.pop("top_n_genes", "auto")
         if isinstance(requested_top_n, str) and requested_top_n != "auto":
             raise ValueError(
                 "top_n_genes must be an integer greater than or equal to 1, "
                 "None, or 'auto'."
             )
-        auto_marker_min = marker_kwargs.pop("auto_marker_min", 20)
-        auto_marker_max = marker_kwargs.pop("auto_marker_max", 100)
+        auto_marker_min = marker_kwargs.pop("auto_marker_min", 10)
+        auto_marker_max = marker_kwargs.pop("auto_marker_max", 60)
         auto_marker_cumulative_fraction = marker_kwargs.pop(
-            "auto_marker_cumulative_fraction", 0.90
+            "auto_marker_cumulative_fraction", 0.95
         )
         auto_marker_relative_strength = marker_kwargs.pop(
-            "auto_marker_relative_strength", 0.15
+            "auto_marker_relative_strength", 0.05
         )
         auto_marker_padj_cap = marker_kwargs.pop("auto_marker_padj_cap", 20.0)
         auto_marker_min_detected_spots = marker_kwargs.pop(
@@ -328,8 +352,8 @@ def refine_group(
         ascending = marker_kwargs.pop("ascending", False)
         log2fc_min = marker_kwargs.pop("log2fc_min", 0.25)
         pval_cutoff = marker_kwargs.pop("pval_cutoff", 0.05)
-        drop_ribosomal = marker_kwargs.pop("drop_ribosomal", False)
-        drop_mitochondrial = marker_kwargs.pop("drop_mitochondrial", False)
+        drop_ribosomal = marker_kwargs.pop("drop_ribosomal", True)
+        drop_mitochondrial = marker_kwargs.pop("drop_mitochondrial", True)
         celltype = marker_kwargs.pop("celltype", "group")
         gene_id_column = marker_kwargs.pop("gene_id_column", "names")
         marker_key = marker_kwargs.get("marker_key", "rank_genes_groups")
@@ -382,7 +406,7 @@ def refine_group(
         _, phase2_markers, marker_role_diagnostics = resolve_phase_marker_tables(
             child_markers,
             marker_roles=workflow_kwargs.get("marker_roles", "shared"),
-            method=workflow_kwargs.get("method", "wjaccard"),
+            method=workflow_kwargs.get("method", "ucell"),
             marker_role_column=workflow_kwargs.get(
                 "ucell_marker_role_column", "marker_role"
             ),
@@ -397,7 +421,7 @@ def refine_group(
             bin_size=bin_size,
             gene_id_column="names",
             celltype="group",
-            method=workflow_kwargs.get("method", "wjaccard"),
+            method=workflow_kwargs.get("method", "ucell"),
             add_to_obs=False,
             verbose=verbose,
             _diagnostics_out=phase2_performance,
@@ -472,7 +496,7 @@ def refine_group(
             else child_result.diagnostics.get("phase2", {})
             .get("performance", {})
         ),
-        "phase2_method": workflow_kwargs.get("method", "wjaccard"),
+        "phase2_method": workflow_kwargs.get("method", "ucell"),
         "minimum_evidence": minimum_evidence,
         "tie_tolerance": tie_tolerance,
     }

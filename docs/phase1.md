@@ -3,6 +3,11 @@
 Permutation filtering is easydecon's standard Phase 1 method and the default
 used by `run_easydecon`.
 
+The recommended workflow uses `aggregation_method="coverage"`,
+`phase1_output_stat="minus_log10_p"`, `num_permutations=1000`, and
+`alpha=0.05`. The lower-level Phase 1 helper retains its own compatibility
+defaults for direct callers.
+
 Phase 1 is implemented by `common_markers_gene_expression_and_filter`. It
 aggregates marker expression for each group at each spatial location, compares
 that evidence with the selected thresholding rule, and returns the raw Phase 1
@@ -39,6 +44,8 @@ Supported values are defined in `AGGREGATION_METHODS`:
 `coverage_power` controls how strongly incomplete marker recovery is
 penalized. `0` ignores coverage, `1` gives the ordinary mean for non-negative
 expression, and the default `0.5` applies a square-root coverage penalty.
+Coverage is the `run_easydecon` default; `sum`, `mean`, and `median` remain
+available alternatives.
 
 ## Filtering method decision table
 

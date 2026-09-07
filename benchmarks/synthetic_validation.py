@@ -376,6 +376,7 @@ def _configuration_by_name(configurations=None):
 def _base_workflow_kwargs(configuration: ValidationConfiguration) -> dict:
     kwargs = {
         "filtering_algorithm": "quantile",
+        "phase1_output_stat": "expression",
         "quantile": 0.5,
         "assign_method": "max",
         "minimum_evidence": 0.0,

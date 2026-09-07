@@ -25,6 +25,7 @@ def main(
             sdata=sdata,
             markers_df=markers_df,
             filtering_algorithm="quantile",
+            phase1_output_stat="expression",
             method="wjaccard",
             return_result_object=True,
             verbose=False,

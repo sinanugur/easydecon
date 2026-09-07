@@ -291,18 +291,18 @@ def test_auto_pool_scales_with_marker_set_size():
     large_marker_set = _resolve_permutation_gene_pool_size(10_000, 60, "auto")
 
     assert small_marker_set["pool_size"] <= large_marker_set["pool_size"]
-    assert small_marker_set["pool_size"] == 500
-    assert large_marker_set["pool_size"] == 1_200
+    assert small_marker_set["pool_size"] == 2_000
+    assert large_marker_set["pool_size"] == 2_000
 
 
 def test_auto_pool_respects_available_panel_size():
     small_panel = _resolve_permutation_gene_pool_size(1_000, 20, "auto")
     large_panel = _resolve_permutation_gene_pool_size(20_000, 20, "auto")
 
-    assert small_panel["pool_size"] == 500
-    assert large_panel["pool_size"] == 1_000
-    assert small_panel["effective_fraction"] == 0.5
-    assert large_panel["effective_fraction"] == 0.05
+    assert small_panel["pool_size"] == 600
+    assert large_panel["pool_size"] == 4_000
+    assert small_panel["effective_fraction"] == 0.6
+    assert large_panel["effective_fraction"] == 0.2
 
 
 def test_rng_progresses_between_null_gene_draws():

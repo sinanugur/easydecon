@@ -57,6 +57,7 @@ def test_workflow_forwards_rank_parameters(monkeypatch):
         _spatial_table(),
         markers_df=_markers(),
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="auc",
         min_markers=1,
         top_n_markers=10,

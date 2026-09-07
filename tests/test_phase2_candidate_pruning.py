@@ -236,6 +236,7 @@ def test_zero_threshold_pruning_preserves_posterior_and_assignments(
     common = dict(
         markers_df=_markers(),
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="sum",
         evidence_to_likelihood=likelihood_method,
         min_markers=1,
@@ -269,6 +270,7 @@ def test_positive_threshold_removes_low_prior_group_and_updates_diagnostics(monk
         _table(),
         markers_df=_markers(),
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="sum",
         min_markers=1,
         log2fc_min=-np.inf,

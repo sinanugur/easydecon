@@ -1,139 +1,103 @@
 # Refining broad groups into subclusters
 
-`ed.refine_group` refines one parent marker group, such as a broad myeloid
-group, into subtype scores only where that parent group is supported.
-
-First run a parent workflow:
+`ed.refine_group` performs hierarchical refinement of one parent group into
+subtypes. Its defaults run a complete child workflow using the final parent
+posterior as the gate.
 
 ```python
-parent = ed.run_easydecon(
-    sdata,
-    markers_df=broad_markers,
-    return_result_object=True,
-    verbose=False,
+prepared_myeloid_markers = ed.prepare_markers(
+    filename="pelka_midlevel_myeloid.csv",
+    source="midlevel_deseq",
+    marker_role_inference="signed",
+    marker_role_inference_log2fc_min=0.25,
+    marker_roles="shared",
 )
-```
 
-## Parent gate
-
-`parent_source="priors"`
-: Use `parent.priors_df[parent_group]` as the gate.
-
-`parent_source="posterior"`
-: Use `parent.posterior_df[parent_group]` as the gate. This raises if
-  `posterior_df` is `None`.
-
-`parent_threshold` selects eligible spatial locations with
-`parent_scores > parent_threshold`. If none pass, `refine_group` raises a
-clear `ValueError`.
-
-## Fast child refinement: mode="phase2"
-
-```python
-refined = ed.refine_group(
-    sdata,
-    parent_result=parent,
+refined_myeloid = ed.refine_group(
+    sdata=sdata,
+    parent_result=result,
     parent_group="Myeloid",
-    markers_df=myeloid_subcluster_markers,
-    mode="phase2",
-    method="wjaccard",
-    parent_source="priors",
-    parent_threshold=0.0,
+    prepared_markers=prepared_myeloid_markers,
+    bin_size=bin_size,
+    table_key=f"square_00{bin_size}um",
 )
 ```
 
-This mode:
+By default, refinement:
 
-* uses the parent gate;
-* reads/routs child markers;
-* runs child Phase 2 only;
-* maps child Phase 2 evidence to `conditional_df`; and
-* does not run child Phase 1.
+1. uses the final parent posterior;
+2. keeps locations with parent posterior greater than zero;
+3. runs child Phase 1;
+4. runs child UCell-like Phase 2;
+5. calculates conditional child posterior probabilities;
+6. scales conditional child probabilities by the parent signal for absolute
+   subtype evidence; and
+7. performs max assignment.
 
-Because it does not calculate child priors, `phase2_candidate_pruning=True` is
-not available in `mode="phase2"`. Use `parent_threshold` to narrow locations or
-switch to `mode="full"`.
-
-## Full child refinement: mode="full"
-
-```python
-refined = ed.refine_group(
-    sdata,
-    parent_result=parent,
-    parent_group="Myeloid",
-    markers_df=myeloid_subcluster_markers,
-    mode="full",
-    parent_source="priors",
-    parent_threshold=0.0,
-    filtering_algorithm="permutation",
-    method="wjaccard",
-    phase2_candidate_pruning=True,
-)
-```
-
-This mode:
-
-* uses the parent gate;
-* runs a complete child `run_easydecon(..., return_result_object=True)`;
-* calculates child Phase 1 priors;
-* calculates child Phase 2 likelihoods;
-* returns child posterior values in `conditional_df`; and
-* can use child candidate pruning.
-
-Full mode rejects list-style child `marker_genes` because it expects a child
-`posterior_df`.
-
-## Phase-specific refinement with UCell-like negative markers
-
-UCell-like scoring can be used for child refinement when the child marker table
-contains informative negative markers.
-
-```python
-refined = ed.refine_group(
-    sdata,
-    parent_result=parent,
-    parent_group="Myeloid",
-    markers_df=myeloid_role_markers,
-    mode="full",
-    marker_roles="phase_specific",
-    filtering_algorithm="permutation",
-    method="ucell",
-    parent_source="priors",
-    parent_threshold=0.0,
-)
-```
-
-## Result fields
-
-`RefinedGroupResult` contains:
-
-`parent_scores`
-: Parent prior or posterior scores aligned to the full spatial table.
-
-`eligible_mask`
-: Boolean mask of locations passing the parent threshold.
-
-`conditional_df`
-: Relative subtype support within eligible parent-positive locations.
-
-`absolute_df`
-: Conditional subtype values scaled by parent support.
+`absolute_df` is therefore:
 
 ```text
 absolute_df = conditional_df * parent_scores
 ```
 
-`assigned_labels`
-: Hard subtype labels assigned from `absolute_df`.
+## Refinement defaults
 
-`phase2_result`
-: Child Phase 2 evidence aligned to the full spatial table.
+The refinement profile intentionally uses a smaller adaptive marker range and
+a stricter Phase 1 alpha than the top-level workflow:
 
-`child_result`
-: Full child `EasyDeconResult` in `mode="full"`, otherwise `None`.
+```python
+refined_myeloid = ed.refine_group(
+    sdata=sdata,
+    parent_result=result,
+    parent_group="Myeloid",
+    prepared_markers=prepared_myeloid_markers,
+    top_n_genes="auto",
+    log2fc_min=0.25,
+    pval_cutoff=0.05,
+    auto_marker_min=10,
+    auto_marker_max=60,
+    bin_size=bin_size,
+    table_key=f"square_00{bin_size}um",
+    mode="full",
+    parent_source="posterior",
+    parent_threshold=0.0,
+    filtering_algorithm="permutation",
+    phase1_output_stat="minus_log10_p",
+    aggregation_method="coverage",
+    alpha=0.01,
+    permutation_gene_pool_fraction="auto",
+    method="ucell",
+    prior_weight=1.0,
+    likelihood_weight=3.0,
+    assign_method="max",
+)
+```
 
-`diagnostics`
-: Parent gate, marker, role-routing, Phase 2, and assignment metadata.
+Every value above can be overridden for a specific child analysis.
 
-The helper does not infer a recursive hierarchy or cache multi-level results on
-disk.
+## Optional fast child refinement
+
+`mode="phase2"` remains available for fast child scoring without child Phase
+1 priors. It defaults to the same refinement marker-selection and UCell
+profile, but cannot use `phase2_candidate_pruning=True` because it does not
+calculate child priors.
+
+```python
+refined = ed.refine_group(
+    sdata=sdata,
+    parent_result=result,
+    parent_group="Myeloid",
+    prepared_markers=prepared_myeloid_markers,
+    mode="phase2",
+)
+```
+
+Use `parent_source="priors"` or another supported Phase 2 method such as
+`method="wjaccard"` only when that is an intentional alternative analysis.
+
+## Result fields
+
+`RefinedGroupResult` contains `parent_scores`, `eligible_mask`,
+`conditional_df`, `absolute_df`, `assigned_labels`, `phase2_result`,
+`child_result`, and `diagnostics`. `child_result` is the child
+`EasyDeconResult` in `mode="full"` and is `None` in `mode="phase2"`.

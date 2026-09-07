@@ -53,7 +53,6 @@ Minimal workflow
     result = ed.run_easydecon(
         sdata=sdata,
         markers_df=markers_df,
-        return_result_object=True,
         verbose=False,
     )
 
@@ -66,8 +65,9 @@ groups, not guaranteed absolute biological cell fractions. ``assigned_labels``
 contains hard assignments and therefore discards uncertainty. Inspect
 ``diagnostics`` before relying on assignments downstream.
 
-``run_easydecon`` defaults to the standard Phase 1 permutation workflow and
-the default Phase 2 weighted Jaccard method.
+``run_easydecon`` defaults to automatic marker selection, Phase 1 permutation
+filtering with coverage aggregation and ``-log10(p)`` evidence, and role-aware
+UCell-like Phase 2 scoring. It returns an ``EasyDeconResult`` by default.
 
 Fast exploratory run
 --------------------
@@ -82,8 +82,8 @@ to ``filtering_algorithm="permutation"``.
         sdata=sdata,
         markers_df=markers_df,
         filtering_algorithm="quantile",
+        phase1_output_stat="expression",
         method="wjaccard",
-        return_result_object=True,
         verbose=False,
     )
 
@@ -99,15 +99,16 @@ Next steps
 Compatibility tuple return
 --------------------------
 
-Without ``return_result_object=True``, ``run_easydecon`` returns the historical
-five-value tuple::
+Pass ``return_result_object=False`` to receive the historical five-value
+tuple::
 
     phase1_result, phase2_result, assigned_labels, priors_df, assignment_df = ed.run_easydecon(
         sdata=sdata,
         markers_df=markers_df,
+        return_result_object=False,
     )
 
 Set ``return_diagnostics=True`` to append the diagnostics dictionary to that
-tuple. New code should prefer ``return_result_object=True`` because it exposes
+tuple. New code should use the default ``EasyDeconResult`` because it exposes
 ``likelihoods_df``, ``posterior_df``, ``assignment_df``, and marker diagnostics
 with stable attribute names.
