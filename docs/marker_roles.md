@@ -70,7 +70,7 @@ DESeq, and PyDESeq2 rows. It creates only `positive` and `negative` roles and
 is useful when running the negative-marker-capable `method="ucell"`. Fold
 change direction is authoritative; signed Scanpy scores or DESeq statistics
 are optional concordance checks. It does not create phase-specific
-`presence`/`identity` roles. `"scanpy_signed"` remains a compatibility alias.
+`presence`/`identity` roles.
 
 ## Top-N with roles
 

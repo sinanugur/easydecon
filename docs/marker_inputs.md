@@ -59,10 +59,9 @@ prepared_markers = ed.prepare_markers(
 
 `"signed"` infers positive and negative marker roles from signed
 differential-expression log fold changes while preserving explicit
-`marker_role` values. `"scanpy_signed"` remains a legacy compatibility alias.
-With `marker_roles="shared"`, the same prepared DE table is reused by both
-phases: Phase 1 uses positive/presence-style evidence, and UCell can also use
-negative markers for discrimination.
+`marker_role` values. With `marker_roles="shared"`, the same prepared DE table
+is reused by both phases: Phase 1 uses positive/presence-style evidence, and
+UCell can also use negative markers for discrimination.
 
 ## Generated-marker workflow examples
 
@@ -260,7 +259,6 @@ marker rows. It infers `positive` and `negative` roles from signed
 `logfoldchanges`, optionally checking finite directional Scanpy scores or
 DESeq statistics. It is opt-in and intended for `marker_roles="shared"` when
 negative-marker-capable `method="ucell"` scoring is desired.
-`"scanpy_signed"` remains a backward-compatible alias.
 
 Reference-profile marker generation can create `presence`, `identity`, and
 `negative` roles with `marker_roles="phase_specific"`. Scanpy and PyDESeq2 do
