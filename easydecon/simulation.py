@@ -40,15 +40,18 @@ def _sample_lognormal_depths(n, mean, std, min_umi=30, rng=None):
 
 def _sample_nb_spot_sizes(n, mean_cells, theta=2.0, rng=None):
     """
-    Zero-truncated Negative Binomial for spot/bin cell counts (heavier tail than Poisson).
+    Zero-truncated Negative Binomial for spot/bin cell counts.
+
     Parameterization:
-      mean = mean_cells
+      underlying NB mean = mean_cells
       Var = mean + mean^2/theta
+
     Smaller theta => heavier tail.
     """
     rng = np.random.default_rng() if rng is None else rng
     mean_cells = float(mean_cells)
     theta = float(theta)
+
     if mean_cells <= 0:
         raise ValueError("mean_cells must be > 0.")
     if theta <= 0:
@@ -56,8 +59,20 @@ def _sample_nb_spot_sizes(n, mean_cells, theta=2.0, rng=None):
 
     p = theta / (theta + mean_cells)
     r = theta
+
     x = rng.negative_binomial(n=r, p=p, size=n)
-    return np.maximum(x, 1).astype(int)
+
+    # Resample zeros instead of converting them to 1
+    zero_mask = x == 0
+    while zero_mask.any():
+        x[zero_mask] = rng.negative_binomial(
+            n=r,
+            p=p,
+            size=zero_mask.sum(),
+        )
+        zero_mask = x == 0
+
+    return x.astype(int)
 
 
 def simulate_visium_hd(
@@ -122,24 +137,39 @@ def simulate_visium_hd(
         sc_ref = sc_ref.copy()
         sc_ref.var_names_make_unique()
 
-    # --- 1) Gene panel filtering ---
-    if gene_list is not None:
-        available = set(sc_ref.var_names)
-        valid_genes = [g for g in gene_list if g in available]
-        if len(valid_genes) == 0:
-            raise ValueError("None of the genes in 'gene_list' were found in sc_ref.var_names.")
-        sc_ref = sc_ref[:, valid_genes].copy()
-
-    # --- 2) Validate and pull counts ---
+    # --- 1) Validate cell type column ---
     if celltype_column not in sc_ref.obs:
         raise ValueError(f"Column '{celltype_column}' not found in sc_ref.obs.")
 
+    # --- 2) Determine count source and gene names ---
     if "counts" in sc_ref.layers:
         X_cells = sc_ref.layers["counts"]
+        count_var_names = sc_ref.var_names
+
     elif sc_ref.raw is not None:
         X_cells = sc_ref.raw.X
+        count_var_names = sc_ref.raw.var_names
+
     else:
         X_cells = sc_ref.X  # must be raw counts
+        count_var_names = sc_ref.var_names
+
+    # --- 3) Gene panel filtering ---
+    if gene_list is not None:
+        available = set(count_var_names)
+        valid_genes = [g for g in gene_list if g in available]
+
+        if len(valid_genes) == 0:
+            raise ValueError(
+                "None of the genes in 'gene_list' were found in the count matrix."
+            )
+
+        gene_idx = count_var_names.get_indexer(valid_genes)
+        X_cells = X_cells[:, gene_idx]
+        output_var_names = pd.Index(valid_genes)
+
+    else:
+        output_var_names = pd.Index(count_var_names)
 
     if not sp.issparse(X_cells):
         X_cells = sp.csr_matrix(X_cells)
@@ -154,19 +184,40 @@ def simulate_visium_hd(
     cells_by_ct = {ct2idx[ct]: np.where(ct_labels == ct)[0] for ct in cell_types}
 
     # --- 4) Dirichlet alpha setup ---
-    if dirichlet_alpha is None or dirichlet_alpha == "uniform":
+    if dirichlet_alpha is None:
         alpha = np.ones(K, dtype=float)
-    elif dirichlet_alpha == "inverse_frequency":
-        counts = np.array([len(cells_by_ct[i]) for i in range(K)], dtype=float)
-        freqs = (counts + 1.0) / (counts.sum() + K)
-        alpha = (1.0 / freqs)
-        alpha = alpha / alpha.sum() * K
-    elif isinstance(dirichlet_alpha, (float, int)):
+
+    elif isinstance(dirichlet_alpha, str):
+        if dirichlet_alpha == "uniform":
+            alpha = np.ones(K, dtype=float)
+
+        elif dirichlet_alpha == "inverse_frequency":
+            counts = np.array(
+                [len(cells_by_ct[i]) for i in range(K)],
+                dtype=float
+            )
+            freqs = (counts + 1.0) / (counts.sum() + K)
+            alpha = 1.0 / freqs
+            alpha = alpha / alpha.sum() * K
+
+        else:
+            raise ValueError(
+                "dirichlet_alpha string must be 'uniform' or 'inverse_frequency'."
+            )
+
+    elif np.isscalar(dirichlet_alpha):
         alpha = np.full(K, float(dirichlet_alpha), dtype=float)
+
     else:
         alpha = np.asarray(dirichlet_alpha, dtype=float)
+
         if alpha.size != K:
-            raise ValueError(f"dirichlet_alpha has length {alpha.size}, expected {K}.")
+            raise ValueError(
+                f"dirichlet_alpha has length {alpha.size}, expected {K}."
+            )
+
+    if not np.all(np.isfinite(alpha)) or np.any(alpha <= 0):
+        raise ValueError("All dirichlet_alpha values must be finite and > 0.")
 
     # --- 5) Sample target depths (total_counts) ---
     if depth_model == "empirical":
@@ -184,8 +235,20 @@ def simulate_visium_hd(
 
     # --- 6) Sample spot sizes (cells per bin) ---
     if spot_size_model == "poisson":
-        spot_sizes = rng.poisson(lam=float(mean_cells_per_spot), size=n_spots)
-        spot_sizes = np.maximum(spot_sizes, 1).astype(int)
+        spot_sizes = rng.poisson(
+            lam=float(mean_cells_per_spot),
+            size=n_spots
+        )
+
+        zero_mask = spot_sizes == 0
+        while zero_mask.any():
+            spot_sizes[zero_mask] = rng.poisson(
+                lam=float(mean_cells_per_spot),
+                size=zero_mask.sum(),
+            )
+            zero_mask = spot_sizes == 0
+
+        spot_sizes = spot_sizes.astype(int)
     elif spot_size_model == "nb":
         spot_sizes = _sample_nb_spot_sizes(
             n=n_spots, mean_cells=float(mean_cells_per_spot), theta=float(nb_theta), rng=rng
@@ -196,16 +259,27 @@ def simulate_visium_hd(
     # --- 7) Simulation ---
     n_genes = X_cells.shape[1]
     X_sim = sp.lil_matrix((n_spots, n_genes), dtype=dtype)
+    # Latent Dirichlet probabilities
+    P_latent = np.zeros((n_spots, K), dtype=np.float32)
+
+    # Actual sampled cell-type composition
     P_sim = np.zeros((n_spots, K), dtype=np.float32)
 
+    # Actual number of cells of each type
+    C_sim = np.zeros((n_spots, K), dtype=np.int32)
+
     for i in range(n_spots):
-        # A) sample cell-type mixture
+        # A) sample latent cell-type mixture
         p = rng.dirichlet(alpha)
-        P_sim[i, :] = p
+        P_latent[i, :] = p
 
         # B) sample cells according to mixture
         n_cells = int(spot_sizes[i])
         counts_per_ct = rng.multinomial(n_cells, p)
+
+        # Store realized ground truth
+        C_sim[i, :] = counts_per_ct
+        P_sim[i, :] = counts_per_ct / n_cells
 
         chosen = []
         for ct_i in range(K):
@@ -255,11 +329,38 @@ def simulate_visium_hd(
     X_sim = X_sim.tocsr()
     adata_sim = AnnData(X=X_sim)
     adata_sim.obs_names = [f"Spot_{i}" for i in range(n_spots)]
-    adata_sim.var_names = sc_ref.var_names
+    adata_sim.var_names = output_var_names
 
+    # Realized composition: use this for benchmarking
     adata_sim.obsm["proportions_true"] = pd.DataFrame(
-        P_sim, columns=cell_types, index=adata_sim.obs_names
+        P_sim,
+        columns=cell_types,
+        index=adata_sim.obs_names,
     )
+
+    # Actual cell numbers used to construct each bin
+    adata_sim.obsm["cell_counts_true"] = pd.DataFrame(
+        C_sim,
+        columns=cell_types,
+        index=adata_sim.obs_names,
+    )
+
+    # Original Dirichlet probabilities, useful for diagnostics
+    adata_sim.obsm["proportions_latent"] = pd.DataFrame(
+        P_latent,
+        columns=cell_types,
+        index=adata_sim.obs_names,
+    )
+    # Ground-truth dominant cell type
+    dominant_idx = np.argmax(C_sim, axis=1)
+    adata_sim.obs["truth"] = [
+        cell_types[idx] for idx in dominant_idx
+    ]
+
+    # Useful benchmark-stratification variables
+    adata_sim.obs["n_cells_true"] = C_sim.sum(axis=1)
+    adata_sim.obs["purity"] = P_sim.max(axis=1)
+    adata_sim.obs["n_celltypes_true"] = (C_sim > 0).sum(axis=1)
 
     # Scanpy-style QC names
     adata_sim.obs["total_counts"] = np.asarray(adata_sim.X.sum(axis=1)).ravel()
