@@ -91,7 +91,13 @@ def run_bin2cell_segmentation(sample_id,
 
     # Scale HE image
     he_path = os.path.join(out_dir, f"{sample_id}.he.tiff")
-    b2c.scaled_he_image(adata, mpp=mpp, save_path=he_path)
+    b2c.scaled_he_image(
+        adata,
+        mpp=mpp,
+        spatial_cropped_key="spatial_cropped",
+        img_key=f"{mpp}_mpp",
+        save_path=he_path,
+    )
 
     # Destripe
     b2c.destripe(adata)
