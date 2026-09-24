@@ -97,6 +97,25 @@ def test_prepare_scanpy_markers_returns_unfiltered_markers():
     assert "G4" in set(prepared.raw_markers_df["names"])
 
 
+def test_prepare_markers_honors_explicit_marker_columns_over_canonical_columns():
+    prepared = prepare_markers(
+        markers_df=pd.DataFrame(
+            {
+                "group": ["wrong_group"],
+                "cell_type": ["T cell"],
+                "names": ["wrong_gene"],
+                "gene": ["CD3D"],
+            }
+        ),
+        celltype="cell_type",
+        gene_id_column="gene",
+        verbose=False,
+    )
+
+    assert prepared.raw_markers_df["group"].tolist() == ["T cell"]
+    assert prepared.raw_markers_df["names"].tolist() == ["CD3D"]
+
+
 def test_prepare_markers_signature_is_deterministic():
     adata = _single_cell_reference()
 

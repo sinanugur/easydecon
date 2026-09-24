@@ -43,25 +43,14 @@ def test_changelog_exists():
     assert (ROOT / "CHANGELOG.md").is_file()
 
 
-def test_readme_mentions_core_workflows():
+def test_readme_has_a_minimal_recommended_workflow():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     for expected in (
         "run_easydecon",
-        "Project status",
-        "docs/index.rst",
-        "docs/usage.rst",
-        "docs/workflow.md",
-        "docs/marker_inputs.md",
-        "docs/reference_markers.md",
-        "docs/scanpy_markers.md",
-        "docs/phase1.md",
-        "docs/phase2.md",
-        "docs/results.md",
-        "docs/visualization.md",
-        "docs/refinement.md",
-        "marker_method",
-        "PyDESeq2",
-        "reference-profile",
+        "prepare_markers",
+        'marker_role_inference="signed"',
+        "EasyDeconResult",
+        "https://easydecon.readthedocs.io/en/latest/",
     ):
         assert expected in readme

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from easydecon._schema import (
+    MarkerSchema,
     get_table,
     resolve_marker_columns,
     standardize_marker_dataframe,
@@ -20,6 +21,71 @@ def test_resolve_marker_columns_detects_aliases_case_insensitively():
         "logfoldchanges": "LOG2FOLDCHANGE",
         "pvals_adj": "Fdr",
     }
+
+
+def test_resolve_marker_columns_prefers_explicit_schema_columns():
+    df = pd.DataFrame(
+        {
+            "group": ["wrong_group"],
+            "cell_type": ["T cell"],
+            "names": ["wrong_gene"],
+            "gene_symbol": ["CD3D"],
+            "logfoldchanges": [0.1],
+            "log2FC": [1.0],
+            "pvals_adj": [0.9],
+            "FDR": [0.01],
+            "scores": [1.0],
+            "stat": [5.0],
+        }
+    )
+
+    assert resolve_marker_columns(df)["group"] == "group"
+    assert resolve_marker_columns(
+        df,
+        MarkerSchema(
+            group_col="cell_type",
+            gene_col="gene_symbol",
+            lfc_col="log2FC",
+            padj_col="FDR",
+            score_col="stat",
+        ),
+    ) == {
+        "group": "cell_type",
+        "names": "gene_symbol",
+        "logfoldchanges": "log2FC",
+        "pvals_adj": "FDR",
+        "scores": "stat",
+    }
+
+
+def test_standardize_marker_dataframe_uses_explicit_schema_columns_without_collisions():
+    df = pd.DataFrame(
+        {
+            "group": ["wrong_group"],
+            "cell_type": ["T cell"],
+            "names": ["wrong_gene"],
+            "gene": ["CD3D"],
+        }
+    )
+
+    result = standardize_marker_dataframe(
+        df,
+        schema=MarkerSchema(group_col="cell_type", gene_col="gene"),
+    )
+
+    assert result["group"].tolist() == ["T cell"]
+    assert result["names"].tolist() == ["CD3D"]
+    assert result.columns.tolist().count("group") == 1
+    assert result.columns.tolist().count("names") == 1
+
+
+def test_resolve_marker_columns_matches_explicit_schema_case_insensitively():
+    df = pd.DataFrame({"Cell_Type": ["T cell"], "names": ["CD3D"]})
+
+    assert (
+        resolve_marker_columns(df, MarkerSchema(group_col="cell_type"))["group"]
+        == "Cell_Type"
+    )
 
 
 def test_standardize_marker_dataframe_renames_aliases():

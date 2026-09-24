@@ -76,15 +76,20 @@ def resolve_marker_columns(df, schema=None):
 
     columns = list(df.columns)
     schema_columns = _schema_columns(schema)
+    default_schema_columns = _schema_columns(MarkerSchema())
     resolved = {}
 
     for canonical, aliases in _CANONICAL_ALIASES.items():
-        # A canonical spelling has priority over every alias or schema hint.
-        if canonical in columns:
-            resolved[canonical] = canonical
-            continue
-
-        candidates = [schema_columns[canonical], canonical, *aliases]
+        requested = schema_columns[canonical]
+        # A non-default schema field is an explicit user request, so it wins
+        # over a competing canonical column.
+        if (
+            str(requested).casefold()
+            != str(default_schema_columns[canonical]).casefold()
+        ):
+            candidates = [requested, canonical, *aliases]
+        else:
+            candidates = [canonical, *aliases]
         for candidate in candidates:
             candidate_folded = str(candidate).casefold()
             match = next(
@@ -226,6 +231,20 @@ def standardize_marker_dataframe(
         for canonical, original in resolved.items()
         if original != canonical
     }
+    # An explicit source (for example, ``cell_type``) can replace an existing
+    # canonical column (``group``). Remove the old source first to prevent
+    # duplicate canonical columns after renaming.
+    conflicting_canonical_columns = [
+        column
+        for canonical, original in resolved.items()
+        if original != canonical
+        for column in result.columns
+        if str(column).casefold() == canonical and column != original
+    ]
+    if conflicting_canonical_columns:
+        result.drop(
+            columns=list(dict.fromkeys(conflicting_canonical_columns)), inplace=True
+        )
     result.rename(columns=rename_columns, inplace=True)
     roles, role_column = normalize_marker_roles(result)
     has_marker_role = roles is not None

@@ -97,8 +97,7 @@ def test_docs_do_not_reference_removed_methods():
 
 def test_root_readme_links_to_documentation():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "docs/index.rst" in readme
-    assert "docs/usage.rst" in readme
+    assert "https://easydecon.readthedocs.io/en/latest/" in readme
 
 
 def test_docs_readme_not_in_main_toctree():
