@@ -31,6 +31,89 @@ def _resolve_posterior_dataframe(
     )
 
 
+def _smooth_spatial_compositions(X, coords, n_neighbors, sample_labels=None):
+    """Average compositions over spatial neighbors, optionally per sample."""
+    import numpy as np
+    from sklearn.neighbors import NearestNeighbors
+
+    if sample_labels is None:
+        n_neighbors_eff = min(n_neighbors, len(X))
+        nn = NearestNeighbors(n_neighbors=n_neighbors_eff).fit(coords)
+        neighbor_idx = nn.kneighbors(coords, return_distance=False)
+        return X[neighbor_idx].mean(axis=1), None
+
+    smoothed = np.empty_like(X)
+    sample_values = sample_labels.to_numpy()
+    effective_neighbors = {}
+    for sample in pd.unique(sample_labels):
+        positions = np.flatnonzero(sample_values == sample)
+        n_neighbors_eff = min(n_neighbors, len(positions))
+        effective_neighbors[sample] = int(n_neighbors_eff)
+        if len(positions) == 1:
+            smoothed[positions] = X[positions]
+            continue
+        sample_coords = coords[positions]
+        nn = NearestNeighbors(n_neighbors=n_neighbors_eff).fit(sample_coords)
+        neighbor_idx = nn.kneighbors(sample_coords, return_distance=False)
+        smoothed[positions] = X[positions][neighbor_idx].mean(axis=1)
+    return smoothed, effective_neighbors
+
+
+def _select_niche_fit_positions(
+    sample_labels,
+    balance_samples,
+    max_fit_per_sample,
+    random_state,
+):
+    """Select deterministic per-sample positions for KMeans fitting."""
+    import numpy as np
+
+    counts = sample_labels.value_counts(sort=False)
+    sample_counts = {sample: int(count) for sample, count in counts.items()}
+    if not balance_samples and max_fit_per_sample is None:
+        positions = np.arange(len(sample_labels))
+        return positions, sample_counts, sample_counts.copy()
+
+    target = None
+    if balance_samples:
+        target = int(counts.min())
+        if max_fit_per_sample is not None:
+            target = min(target, max_fit_per_sample)
+
+    rng = np.random.default_rng(random_state)
+    sample_values = sample_labels.to_numpy()
+    selected = []
+    fit_counts = {}
+    for sample, count in counts.items():
+        positions = np.flatnonzero(sample_values == sample)
+        n_select = target if balance_samples else min(int(count), max_fit_per_sample)
+        if n_select < len(positions):
+            positions = rng.choice(positions, size=n_select, replace=False)
+        selected.append(positions)
+        fit_counts[sample] = int(n_select)
+    return np.concatenate(selected), sample_counts, fit_counts
+
+
+def _select_inertia_elbow(candidate_k, inertia):
+    """Return the k farthest below the endpoint line of the inertia curve."""
+    import numpy as np
+
+    if len(candidate_k) < 3:
+        return candidate_k[0]
+
+    k_values = np.asarray(candidate_k, dtype=float)
+    inertia_values = np.asarray(inertia, dtype=float)
+    k_range = np.ptp(k_values)
+    inertia_range = np.ptp(inertia_values)
+    if k_range == 0 or inertia_range == 0:
+        return candidate_k[0]
+
+    x = (k_values - k_values.min()) / k_range
+    y = (inertia_values - inertia_values.min()) / inertia_range
+    endpoint_line = y[0] + (y[-1] - y[0]) * x
+    return candidate_k[int(np.argmax(endpoint_line - y))]
+
+
 def detect_spatial_niches_from_posteriors(
     sdata,
     posterior_df,
@@ -49,6 +132,11 @@ def detect_spatial_niches_from_posteriors(
     add_to_obs: bool = True,
     random_state: int = 0,
     return_diagnostics: bool = False,
+    sample_column=None,
+    balance_samples: bool = False,
+    max_fit_per_sample=None,
+    silhouette_sample_size=10_000,
+    return_model: bool = False,
 ):
     """
     Detect spatial niches from an easydecon posterior dataframe.
@@ -59,10 +147,12 @@ def detect_spatial_niches_from_posteriors(
     Workflow:
       1) Align posterior_df rows to the spatial table.
       2) Extract spatial coordinates for each spot.
-      3) Optionally smooth posteriors by averaging over spatial k-nearest neighbors.
-      4) Select n_niches (optionally automatically via silhouette/inertia).
-      5) Cluster the (smoothed) compositions into `n_niches` groups (niches).
-      6) Optionally write niche labels into `table.obs[niches_column]`.
+      3) Optionally smooth posteriors over spatial neighbors, separately within
+         each sample when `sample_column` is provided.
+      4) Optionally select a balanced/capped subset for KMeans fitting.
+      5) Select n_niches (optionally automatically via silhouette/inertia).
+      6) Predict niches for every aligned spatial location.
+      7) Optionally write niche labels into `table.obs[niches_column]`.
 
     Parameters
     ----------
@@ -90,8 +180,8 @@ def detect_spatial_niches_from_posteriors(
     selection_metric : {"silhouette", "inertia"}, optional (default: "silhouette")
         Metric for automatic selection:
           - "silhouette": choose k with highest silhouette score.
-          - "inertia": choose k with strongest elbow-like drop in inertia
-            (here simply the largest relative decrease).
+          - "inertia": choose the elbow by maximum deviation below the line
+            joining the first and last candidate inertia values.
     smooth : bool, optional (default: True)
         If True, compute neighborhood-averaged compositions before clustering.
     niches_column : str, optional (default: "niche")
@@ -103,6 +193,19 @@ def detect_spatial_niches_from_posteriors(
     return_diagnostics : bool, optional (default: False)
         If True, also return a diagnostics dict with candidate k, inertia,
         silhouette (if available), and chosen_k.
+    sample_column : str, optional
+        Column in `table.obs` identifying samples. Spatial smoothing is performed
+        independently within each sample.
+    balance_samples : bool, optional (default: False)
+        If True, use the same number of fitting locations from every sample.
+    max_fit_per_sample : int, optional
+        Maximum fitting locations contributed by each sample. Smoothing and final
+        prediction still use every aligned location.
+    silhouette_sample_size : int or None, optional (default: 10000)
+        Maximum fitting rows used for silhouette scoring. None uses all fitting
+        rows.
+    return_model : bool, optional (default: False)
+        If True, return the final fitted KMeans model after the usual outputs.
 
     Returns
     -------
@@ -118,11 +221,44 @@ def detect_spatial_niches_from_posteriors(
           - "silhouette"
           - "chosen_k"
           - "selection_metric"
+    model : sklearn.cluster.KMeans, optional
+        The final model used to predict all returned labels. Returned only when
+        `return_model=True`.
     """
     import numpy as np
-    from sklearn.neighbors import NearestNeighbors
+    from numbers import Integral
+
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
+
+    if selection_metric not in {"silhouette", "inertia"}:
+        raise ValueError(
+            "selection_metric must be one of {'silhouette', 'inertia'}."
+        )
+    if not isinstance(balance_samples, bool):
+        raise TypeError("balance_samples must be a bool.")
+    if (
+        max_fit_per_sample is not None
+        and (
+            isinstance(max_fit_per_sample, bool)
+            or not isinstance(max_fit_per_sample, Integral)
+            or max_fit_per_sample < 1
+        )
+    ):
+        raise ValueError("max_fit_per_sample must be None or an integer >= 1.")
+    if (
+        silhouette_sample_size is not None
+        and (
+            isinstance(silhouette_sample_size, bool)
+            or not isinstance(silhouette_sample_size, Integral)
+            or silhouette_sample_size < 2
+        )
+    ):
+        raise ValueError("silhouette_sample_size must be None or an integer >= 2.")
+    if sample_column is None and balance_samples:
+        raise ValueError("balance_samples=True requires sample_column.")
+    if sample_column is None and max_fit_per_sample is not None:
+        raise ValueError("max_fit_per_sample requires sample_column.")
 
     posterior_df = _resolve_posterior_dataframe(
         posterior_df,
@@ -134,6 +270,8 @@ def detect_spatial_niches_from_posteriors(
         table_key=table_key,
         preferred_table_keys=preferred_table_keys,
     )
+    if sample_column is not None and sample_column not in table.obs.columns:
+        raise ValueError(f"sample_column {sample_column!r} was not found in table.obs.")
 
     # -------------------------
     # 2) Align indices
@@ -169,6 +307,14 @@ def detect_spatial_niches_from_posteriors(
     X = post.to_numpy(dtype=float)
     n_spots = X.shape[0]
 
+    sample_labels = None
+    if sample_column is not None:
+        sample_labels = table.obs.loc[common_index, sample_column]
+        if sample_labels.isna().any():
+            raise ValueError(
+                f"sample_column {sample_column!r} contains missing sample identifiers."
+            )
+
     # -------------------------
     # 3) Get spatial coordinates
     # -------------------------
@@ -189,17 +335,47 @@ def detect_spatial_niches_from_posteriors(
     # -------------------------
     # 4) Neighborhood smoothing
     # -------------------------
+    effective_neighbors_by_sample = None
     if smooth and n_neighbors > 1 and n_spots > 1:
-        n_neighbors_eff = min(n_neighbors, n_spots)
-        nn = NearestNeighbors(n_neighbors=n_neighbors_eff)
-        nn.fit(coords)
-        neighbor_idx = nn.kneighbors(coords, return_distance=False)
-        X_smooth = X[neighbor_idx].mean(axis=1)
+        X_smooth, effective_neighbors_by_sample = _smooth_spatial_compositions(
+            X,
+            coords,
+            n_neighbors,
+            sample_labels=sample_labels,
+        )
     else:
         X_smooth = X
+        if sample_labels is not None:
+            effective_neighbors_by_sample = {
+                sample: 1 for sample in pd.unique(sample_labels)
+            }
 
     smoothed_posteriors = pd.DataFrame(
         X_smooth, index=common_index, columns=post.columns
+    )
+
+    if sample_labels is None:
+        fit_positions = np.arange(n_spots)
+        sample_counts = None
+        fit_counts_by_sample = None
+        n_samples = 1
+    else:
+        fit_positions, sample_counts, fit_counts_by_sample = (
+            _select_niche_fit_positions(
+                sample_labels,
+                balance_samples,
+                max_fit_per_sample,
+                random_state,
+            )
+        )
+        n_samples = len(sample_counts)
+
+    X_fit = smoothed_posteriors.iloc[fit_positions]
+    n_fit = len(X_fit)
+    effective_silhouette_sample_size = (
+        None
+        if silhouette_sample_size is None
+        else min(int(silhouette_sample_size), n_fit)
     )
 
     diagnostics = {
@@ -208,105 +384,105 @@ def detect_spatial_niches_from_posteriors(
         "silhouette": None,
         "chosen_k": None,
         "selection_metric": selection_metric,
+        "n_total_locations": int(n_spots),
+        "n_fit_locations": int(n_fit),
+        "sample_column": sample_column,
+        "balance_samples": balance_samples,
+        "max_fit_per_sample": max_fit_per_sample,
+        "sample_counts": sample_counts,
+        "fit_counts_by_sample": fit_counts_by_sample,
+        "n_samples": int(n_samples),
+        "n_neighbors": n_neighbors,
+        "effective_neighbors_by_sample": effective_neighbors_by_sample,
+        "silhouette_sample_size": effective_silhouette_sample_size,
+        "feature_columns": list(smoothed_posteriors.columns),
     }
 
     # -------------------------
     # 5) Choose n_niches (optional auto)
     # -------------------------
+    def _silhouette(labels, k):
+        if k <= 1 or n_fit <= k:
+            return np.nan
+        try:
+            return float(
+                silhouette_score(
+                    X_fit,
+                    labels,
+                    sample_size=effective_silhouette_sample_size,
+                    random_state=random_state,
+                )
+            )
+        except Exception:
+            return np.nan
+
     if auto_n_niches:
-        if n_spots < 3:
-            # too few points to do anything fancy
-            chosen_k = max(1, min(n_niches, n_spots))
+        ks = [
+            k
+            for k in range(n_niches_min, n_niches_max + 1)
+            if 1 < k <= n_fit
+        ]
+        candidate_models = {}
+        inertia_list = []
+        sil_list = []
+        for k in ks:
+            model_k = KMeans(
+                n_clusters=k,
+                random_state=random_state,
+                n_init="auto",
+            ).fit(X_fit)
+            candidate_models[k] = model_k
+            inertia_list.append(float(model_k.inertia_))
+            sil_list.append(_silhouette(model_k.labels_, k))
+
+        if not ks:
+            chosen_k = max(1, min(n_niches, n_fit))
             kmeans = KMeans(
                 n_clusters=chosen_k,
                 random_state=random_state,
                 n_init="auto",
-            )
-            labels = kmeans.fit_predict(X_smooth)
+            ).fit(X_fit)
+            ks = [chosen_k]
+            inertia_list = [float(kmeans.inertia_)]
+            sil_list = [_silhouette(kmeans.labels_, chosen_k)]
+        elif selection_metric == "inertia":
+            chosen_k = _select_inertia_elbow(ks, inertia_list)
+            kmeans = candidate_models[chosen_k]
         else:
-            ks = [
-                k
-                for k in range(n_niches_min, n_niches_max + 1)
-                if 1 < k <= n_spots
+            finite_scores = [
+                (score, k) for k, score in zip(ks, sil_list) if np.isfinite(score)
             ]
-            if len(ks) == 0:
-                ks = [min(max(2, n_niches_min), n_spots)]
-
-            inertia_list = []
-            sil_list = []
-            best_score = -np.inf
-            best_k = None
-            best_labels = None
-
-            for k in ks:
-                kmeans_k = KMeans(
-                    n_clusters=k,
-                    random_state=random_state,
-                    n_init="auto",
-                )
-                labels_k = kmeans_k.fit_predict(X_smooth)
-                inertia_k = float(kmeans_k.inertia_)
-                inertia_list.append(inertia_k)
-
-                sil_k = np.nan
-                if k > 1 and n_spots > k:
-                    try:
-                        sil_k = float(silhouette_score(X_smooth, labels_k))
-                    except Exception:
-                        sil_k = np.nan
-                sil_list.append(sil_k)
-
-                if selection_metric == "silhouette":
-                    score_k = sil_k
-                else:  # "inertia"
-                    # Use negative inertia so "larger is better"
-                    score_k = -inertia_k
-
-                if np.isfinite(score_k) and (score_k > best_score):
-                    best_score = score_k
-                    best_k = k
-                    best_labels = labels_k
-
-            if best_k is None:
-                # Fallback: single run with default n_niches
-                chosen_k = max(1, min(n_niches, n_spots))
+            if finite_scores:
+                chosen_k = max(finite_scores, key=lambda item: item[0])[1]
+            else:
+                chosen_k = max(1, min(n_niches, n_fit))
+            kmeans = candidate_models.get(chosen_k)
+            if kmeans is None:
                 kmeans = KMeans(
                     n_clusters=chosen_k,
                     random_state=random_state,
                     n_init="auto",
-                )
-                labels = kmeans.fit_predict(X_smooth)
-            else:
-                chosen_k = best_k
-                labels = best_labels
+                ).fit(X_fit)
 
-            diagnostics["candidate_k"] = ks
-            diagnostics["inertia"] = inertia_list
-            diagnostics["silhouette"] = sil_list
-            diagnostics["chosen_k"] = chosen_k
+        diagnostics["candidate_k"] = ks
+        diagnostics["inertia"] = inertia_list
+        diagnostics["silhouette"] = sil_list
+        diagnostics["chosen_k"] = chosen_k
     else:
-        # Fixed n_niches
-        chosen_k = max(1, min(n_niches, n_spots))
+        chosen_k = max(1, min(n_niches, n_fit))
         kmeans = KMeans(
             n_clusters=chosen_k,
             random_state=random_state,
             n_init="auto",
-        )
-        labels = kmeans.fit_predict(X_smooth)
-
-        # diagnostics (optional)
-        if return_diagnostics and chosen_k > 1 and n_spots > chosen_k:
-            try:
-                sil = float(silhouette_score(X_smooth, labels))
-            except Exception:
-                sil = np.nan
-        else:
-            sil = np.nan
+        ).fit(X_fit)
+        sil = _silhouette(kmeans.labels_, chosen_k) if return_diagnostics else np.nan
 
         diagnostics["candidate_k"] = [chosen_k]
         diagnostics["inertia"] = [float(kmeans.inertia_)]
         diagnostics["silhouette"] = [sil]
         diagnostics["chosen_k"] = chosen_k
+
+    labels = kmeans.predict(smoothed_posteriors)
 
     # -------------------------
     # 6) Wrap labels in DataFrame (categorical)
@@ -331,10 +507,13 @@ def detect_spatial_niches_from_posteriors(
             sort=False,
         )
 
+    if return_diagnostics and return_model:
+        return niches, smoothed_posteriors, diagnostics, kmeans
     if return_diagnostics:
         return niches, smoothed_posteriors, diagnostics
-    else:
-        return niches, smoothed_posteriors
+    if return_model:
+        return niches, smoothed_posteriors, kmeans
+    return niches, smoothed_posteriors
 
 
 def detect_niches_from_easydecon_result(

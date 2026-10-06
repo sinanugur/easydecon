@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.8
+
+### Added
+
+- Sample-aware pooled niche detection with within-sample spatial smoothing,
+  balanced or capped model fitting, full-resolution prediction, expanded
+  diagnostics, and optional fitted-model returns.
+- Richer Visium HD simulation truth outputs, including realized cell counts and
+  proportions, latent proportions, dominant cell type, purity, and complexity.
+
+### Changed
+
+- Automatic niche selection now evaluates the fitting subset, supports sampled
+  silhouette scoring, and uses an inertia elbow criterion.
+- Hierarchical refinement now defaults to full posterior-based refinement with
+  the recommended automatic-marker, coverage, and UCell settings.
+- Simulation gene filtering now follows the selected count source and validates
+  Dirichlet parameters.
+
+### Fixed
+
+- Explicit marker-column selections take precedence when canonical and custom
+  columns coexist.
+- Bin2Cell segmentation now supplies explicit cropped-spatial and image keys.
+- Zero-truncated simulated cell counts are resampled instead of clamped to one.
+
+## 0.1.7
+
+### Added
+
+- Automatic marker selection and signed marker-role inference.
+- Coverage-based Phase 1 aggregation and UCell Phase 2 scoring.
+
+### Changed
+
+- The recommended workflow now uses automatic marker selection, coverage-based
+  Phase 1 evidence, and UCell Phase 2 scoring by default.
+
+### Fixed
+
+- Explicit marker-column arguments now take precedence over competing canonical
+  columns during marker preparation.
+
 ## 0.1.6a0 - Unreleased
 
 ### Added

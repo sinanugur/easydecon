@@ -40,6 +40,36 @@ columns exist.
 `add_to_obs`
 : If `True`, writes labels to `table.obs[niches_column]`.
 
+## Multiple samples
+
+Set `sample_column` when several samples share one table. Spatial smoothing is
+then performed independently within each sample, so overlapping coordinate
+systems cannot create cross-sample neighbors. The complete smoothed matrix is
+always returned and receives predictions from one pooled KMeans model.
+
+`balance_samples=True` gives each sample the same number of fitting locations.
+`max_fit_per_sample` optionally caps that number without reducing the data used
+for smoothing or final prediction.
+
+```python
+niches, smoothed, diagnostics, model = ed.detect_spatial_niches_from_posteriors(
+    combined,
+    posterior_all,
+    sample_column="sample",
+    n_neighbors=6,
+    n_niches=6,
+    balance_samples=True,
+    max_fit_per_sample=100_000,
+    return_diagnostics=True,
+    return_model=True,
+    random_state=0,
+)
+```
+
+Automatic niche selection evaluates only the fitting matrix. Silhouette
+evaluation is capped by `silhouette_sample_size` (10,000 by default), while
+`selection_metric="inertia"` uses an elbow criterion.
+
 ## Example
 
 ```python
