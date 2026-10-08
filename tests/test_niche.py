@@ -153,9 +153,40 @@ def test_sample_aware_smoothing_never_crosses_sample_boundaries():
         return_diagnostics=True,
     )
 
-    pd.testing.assert_frame_equal(smoothed, posterior)
+    pd.testing.assert_frame_equal(smoothed, posterior.astype(np.float32))
     assert niches.index.equals(table.obs.index)
     assert diagnostics["effective_neighbors_by_sample"] == {"A": 2, "B": 1}
+
+    _, chunked = detect_spatial_niches_from_posteriors(
+        table,
+        posterior,
+        sample_column="sample",
+        n_neighbors=2,
+        n_niches=2,
+        smoothing_chunk_size=1,
+        add_to_obs=False,
+    )
+    pd.testing.assert_frame_equal(chunked, smoothed)
+
+
+def test_posterior_conversion_is_float32_ordered_and_non_mutating(spatial_table):
+    posterior = pd.DataFrame(
+        {
+            "B": ["0.9", "0.1", "0.8", "0.2", "0.7", "0.3"],
+            "invalid": ["x"] * 6,
+            "A": [0.1, 0.9, np.inf, 0.8, np.nan, 0.7],
+            "zero": [0.0] * 6,
+        },
+        index=spatial_table.obs.index,
+    )
+    original = posterior.copy(deep=True)
+
+    _, smoothed = _detect(spatial_table, posterior)
+
+    pd.testing.assert_frame_equal(posterior, original)
+    assert smoothed.columns.tolist() == ["B", "A"]
+    assert all(dtype == np.dtype("float32") for dtype in smoothed.dtypes)
+    assert np.isfinite(smoothed.to_numpy()).all()
 
 
 @pytest.mark.parametrize(
@@ -214,6 +245,157 @@ def test_balanced_fit_is_deterministic():
 
     pd.testing.assert_frame_equal(niches_a, niches_b)
     assert np.allclose(model_a.cluster_centers_, model_b.cluster_centers_)
+
+
+@pytest.mark.parametrize(
+    ("clustering_method", "expected_model"),
+    [("kmeans", "KMeans"), ("minibatch", "MiniBatchKMeans"), ("auto", "KMeans")],
+)
+def test_clustering_methods(clustering_method, expected_model):
+    table, posterior = _multi_sample_data()
+
+    niches, smoothed, diagnostics, model = detect_spatial_niches_from_posteriors(
+        table,
+        posterior,
+        smooth=False,
+        n_niches=2,
+        clustering_method=clustering_method,
+        prediction_chunk_size=11,
+        add_to_obs=False,
+        return_diagnostics=True,
+        return_model=True,
+        random_state=5,
+    )
+
+    assert type(model).__name__ == expected_model
+    assert diagnostics["selected_clustering_method"] == (
+        "minibatch" if expected_model == "MiniBatchKMeans" else "kmeans"
+    )
+    assert diagnostics["matrix_dtype"] == "float32"
+    assert len(niches) == len(smoothed) == 140
+    assert np.array_equal(
+        model.predict(smoothed).astype(str),
+        niches["niche"].astype(str).to_numpy(),
+    )
+
+
+def test_auto_clustering_uses_minibatch_at_threshold():
+    n_locations = 50_000
+    table = ad.AnnData(
+        X=np.ones((n_locations, 1), dtype=np.float32),
+        obs=pd.DataFrame(index=[f"spot_{index}" for index in range(n_locations)]),
+        var=pd.DataFrame(index=["G1"]),
+    )
+    table.obsm["spatial"] = np.column_stack(
+        [np.arange(n_locations, dtype=np.float32), np.zeros(n_locations)]
+    )
+    first = np.linspace(0.05, 0.95, n_locations, dtype=np.float32)
+    posterior = pd.DataFrame(
+        {"A": first, "B": 1.0 - first}, index=table.obs.index
+    )
+
+    niches, smoothed, diagnostics, model = detect_spatial_niches_from_posteriors(
+        table,
+        posterior,
+        smooth=False,
+        n_niches=3,
+        clustering_method="auto",
+        prediction_chunk_size=7_000,
+        add_to_obs=False,
+        return_diagnostics=True,
+        return_model=True,
+    )
+
+    assert type(model).__name__ == "MiniBatchKMeans"
+    assert diagnostics["selected_clustering_method"] == "minibatch"
+    assert len(niches) == len(smoothed) == n_locations
+
+
+def test_chunked_prediction_matches_single_batch():
+    table, posterior = _multi_sample_data()
+    common = {
+        "smooth": False,
+        "n_niches": 2,
+        "add_to_obs": False,
+        "random_state": 9,
+    }
+
+    chunked, _ = detect_spatial_niches_from_posteriors(
+        table, posterior, prediction_chunk_size=7, **common
+    )
+    single_batch, _ = detect_spatial_niches_from_posteriors(
+        table, posterior, prediction_chunk_size=10_000, **common
+    )
+
+    pd.testing.assert_frame_equal(chunked, single_batch)
+
+
+def test_minibatch_supports_automatic_niche_selection():
+    table, posterior = _multi_sample_data()
+
+    niches, smoothed, diagnostics, model = detect_spatial_niches_from_posteriors(
+        table,
+        posterior,
+        smooth=False,
+        auto_n_niches=True,
+        n_niches_min=2,
+        n_niches_max=4,
+        selection_metric="inertia",
+        clustering_method="minibatch",
+        add_to_obs=False,
+        return_diagnostics=True,
+        return_model=True,
+        random_state=2,
+    )
+
+    assert type(model).__name__ == "MiniBatchKMeans"
+    assert all(np.isnan(diagnostics["silhouette"]))
+    assert len(niches) == len(smoothed) == 140
+
+
+def test_fixed_niches_never_calculates_silhouette(
+    spatial_table, posterior_df, monkeypatch
+):
+    import sklearn.metrics
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("silhouette_score should not be called")
+
+    monkeypatch.setattr(sklearn.metrics, "silhouette_score", fail_if_called)
+
+    _, _, diagnostics = _detect(
+        spatial_table,
+        posterior_df,
+        return_diagnostics=True,
+    )
+
+    assert np.isnan(diagnostics["silhouette"][0])
+
+
+def test_verbose_reports_memory_sensitive_stages(spatial_table, posterior_df, capsys):
+    _detect(spatial_table, posterior_df, verbose=True, prediction_chunk_size=2)
+
+    output = capsys.readouterr().out
+    assert "Aligning and converting posterior matrix" in output
+    assert "Final model fitting completed" in output
+    assert "Full-data prediction completed" in output
+    assert "Constructing output DataFrames" in output
+
+
+def test_obs_assignment_preserves_table_without_merge(spatial_table, posterior_df):
+    original_index = spatial_table.obs.index.copy()
+    partial = posterior_df.drop(index="spot_e")
+
+    niches, _ = detect_spatial_niches_from_posteriors(
+        spatial_table,
+        partial,
+        smooth=False,
+        n_niches=2,
+    )
+
+    assert spatial_table.obs.index.equals(original_index)
+    assert spatial_table.obs.loc[niches.index, "niche"].notna().all()
+    assert pd.isna(spatial_table.obs.loc["spot_e", "niche"])
 
 
 @pytest.mark.parametrize(
@@ -320,6 +502,9 @@ def test_detect_spatial_niches_rejects_all_zero_input(spatial_table):
         ({"max_fit_per_sample": 0, "sample_column": "sample"}, ValueError, ">= 1"),
         ({"silhouette_sample_size": 1}, ValueError, ">= 2"),
         ({"selection_metric": "invalid"}, ValueError, "selection_metric"),
+        ({"clustering_method": "invalid"}, ValueError, "clustering_method"),
+        ({"smoothing_chunk_size": 0}, ValueError, "smoothing_chunk_size"),
+        ({"prediction_chunk_size": 0}, ValueError, "prediction_chunk_size"),
         ({"balance_samples": True}, ValueError, "requires sample_column"),
         ({"max_fit_per_sample": 10}, ValueError, "requires sample_column"),
     ],

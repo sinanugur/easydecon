@@ -31,32 +31,94 @@ def _resolve_posterior_dataframe(
     )
 
 
-def _smooth_spatial_compositions(X, coords, n_neighbors, sample_labels=None):
-    """Average compositions over spatial neighbors, optionally per sample."""
+def _smooth_spatial_compositions(
+    X,
+    coords,
+    n_neighbors,
+    sample_labels=None,
+    chunk_size=20_000,
+):
+    """Average compositions over spatial neighbors in bounded query chunks."""
     import numpy as np
     from sklearn.neighbors import NearestNeighbors
 
+    smoothed = np.empty(X.shape, dtype=np.float32)
     if sample_labels is None:
-        n_neighbors_eff = min(n_neighbors, len(X))
-        nn = NearestNeighbors(n_neighbors=n_neighbors_eff).fit(coords)
-        neighbor_idx = nn.kneighbors(coords, return_distance=False)
-        return X[neighbor_idx].mean(axis=1), None
+        groups = [(None, None)]
+        effective_neighbors = None
+    else:
+        sample_values = sample_labels.to_numpy()
+        groups = (
+            (sample, np.flatnonzero(sample_values == sample))
+            for sample in pd.unique(sample_labels)
+        )
+        effective_neighbors = {}
 
-    smoothed = np.empty_like(X)
-    sample_values = sample_labels.to_numpy()
-    effective_neighbors = {}
-    for sample in pd.unique(sample_labels):
-        positions = np.flatnonzero(sample_values == sample)
-        n_neighbors_eff = min(n_neighbors, len(positions))
-        effective_neighbors[sample] = int(n_neighbors_eff)
-        if len(positions) == 1:
-            smoothed[positions] = X[positions]
-            continue
-        sample_coords = coords[positions]
+    for sample, positions in groups:
+        sample_coords = coords if positions is None else coords[positions]
+        sample_size = len(sample_coords)
+        n_neighbors_eff = min(n_neighbors, sample_size)
+        if effective_neighbors is not None:
+            effective_neighbors[sample] = int(n_neighbors_eff)
         nn = NearestNeighbors(n_neighbors=n_neighbors_eff).fit(sample_coords)
-        neighbor_idx = nn.kneighbors(sample_coords, return_distance=False)
-        smoothed[positions] = X[positions][neighbor_idx].mean(axis=1)
+
+        for start in range(0, sample_size, chunk_size):
+            stop = min(start + chunk_size, sample_size)
+            neighbor_idx = nn.kneighbors(
+                sample_coords[start:stop], return_distance=False
+            )
+            if positions is not None:
+                neighbor_idx = positions[neighbor_idx]
+
+            chunk_mean = np.zeros((stop - start, X.shape[1]), dtype=np.float32)
+            for neighbor_number in range(n_neighbors_eff):
+                chunk_mean += X[neighbor_idx[:, neighbor_number]]
+            chunk_mean /= np.float32(n_neighbors_eff)
+
+            output_positions = (
+                slice(start, stop) if positions is None else positions[start:stop]
+            )
+            smoothed[output_positions] = chunk_mean
+
     return smoothed, effective_neighbors
+
+
+def _make_niche_model(method, n_clusters, random_state):
+    """Create the requested sklearn clustering model."""
+    from sklearn.cluster import KMeans, MiniBatchKMeans
+
+    model_class = KMeans if method == "kmeans" else MiniBatchKMeans
+    kwargs = {
+        "n_clusters": n_clusters,
+        "random_state": random_state,
+        "n_init": "auto",
+    }
+    if method == "minibatch":
+        kwargs["batch_size"] = 4096
+    return model_class(**kwargs)
+
+
+def _predict_in_chunks(model, matrix, chunk_size):
+    """Predict labels in bounded batches."""
+    import numpy as np
+
+    labels = np.empty(len(matrix), dtype=np.int32)
+    for start in range(0, len(matrix), chunk_size):
+        stop = min(start + chunk_size, len(matrix))
+        labels[start:stop] = model.predict(matrix[start:stop])
+    return labels
+
+
+def _peak_memory_mb():
+    """Return peak RSS in MiB when the standard-library metric is available."""
+    try:
+        import resource
+        import sys
+
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return rss / (1024 * 1024 if sys.platform == "darwin" else 1024)
+    except (ImportError, OSError):
+        return None
 
 
 def _select_niche_fit_positions(
@@ -71,8 +133,7 @@ def _select_niche_fit_positions(
     counts = sample_labels.value_counts(sort=False)
     sample_counts = {sample: int(count) for sample, count in counts.items()}
     if not balance_samples and max_fit_per_sample is None:
-        positions = np.arange(len(sample_labels))
-        return positions, sample_counts, sample_counts.copy()
+        return None, sample_counts, sample_counts.copy()
 
     target = None
     if balance_samples:
@@ -137,6 +198,10 @@ def detect_spatial_niches_from_posteriors(
     max_fit_per_sample=None,
     silhouette_sample_size=10_000,
     return_model: bool = False,
+    clustering_method: str = "kmeans",
+    smoothing_chunk_size: int = 20_000,
+    prediction_chunk_size: int = 50_000,
+    verbose: bool = False,
 ):
     """
     Detect spatial niches from an easydecon posterior dataframe.
@@ -205,7 +270,16 @@ def detect_spatial_niches_from_posteriors(
         Maximum fitting rows used for silhouette scoring. None uses all fitting
         rows.
     return_model : bool, optional (default: False)
-        If True, return the final fitted KMeans model after the usual outputs.
+        If True, return the final fitted clustering model after the usual outputs.
+    clustering_method : {"kmeans", "minibatch", "auto"}, optional
+        Clustering implementation. "auto" uses MiniBatchKMeans for fitting
+        matrices with at least 50,000 rows and KMeans otherwise.
+    smoothing_chunk_size : int, optional (default: 20000)
+        Maximum locations queried at once during spatial smoothing.
+    prediction_chunk_size : int, optional (default: 50000)
+        Maximum locations predicted at once after model fitting.
+    verbose : bool, optional (default: False)
+        Print concise progress and memory information.
 
     Returns
     -------
@@ -221,19 +295,28 @@ def detect_spatial_niches_from_posteriors(
           - "silhouette"
           - "chosen_k"
           - "selection_metric"
-    model : sklearn.cluster.KMeans, optional
+    model : sklearn.cluster.KMeans or sklearn.cluster.MiniBatchKMeans, optional
         The final model used to predict all returned labels. Returned only when
         `return_model=True`.
     """
     import numpy as np
     from numbers import Integral
 
-    from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
+
+    def _log(message):
+        if verbose:
+            memory_mb = _peak_memory_mb()
+            suffix = "" if memory_mb is None else f"; peak RSS {memory_mb:.1f} MiB"
+            print(f"[easydecon.niche] {message}{suffix}", flush=True)
 
     if selection_metric not in {"silhouette", "inertia"}:
         raise ValueError(
             "selection_metric must be one of {'silhouette', 'inertia'}."
+        )
+    if clustering_method not in {"kmeans", "minibatch", "auto"}:
+        raise ValueError(
+            "clustering_method must be one of {'kmeans', 'minibatch', 'auto'}."
         )
     if not isinstance(balance_samples, bool):
         raise TypeError("balance_samples must be a bool.")
@@ -255,6 +338,12 @@ def detect_spatial_niches_from_posteriors(
         )
     ):
         raise ValueError("silhouette_sample_size must be None or an integer >= 2.")
+    for value, name in (
+        (smoothing_chunk_size, "smoothing_chunk_size"),
+        (prediction_chunk_size, "prediction_chunk_size"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
+            raise ValueError(f"{name} must be an integer >= 1.")
     if sample_column is None and balance_samples:
         raise ValueError("balance_samples=True requires sample_column.")
     if sample_column is None and max_fit_per_sample is not None:
@@ -279,33 +368,52 @@ def detect_spatial_niches_from_posteriors(
     if not isinstance(posterior_df, pd.DataFrame):
         raise TypeError("posterior_df must be a pandas DataFrame (spots x cell types).")
 
+    _log("Aligning and converting posterior matrix")
     common_index = table.obs.index[table.obs.index.isin(posterior_df.index)]
     if len(common_index) == 0:
         raise ValueError(
             "No overlapping spot IDs between table.obs.index and posterior_df.index."
         )
 
-    post = posterior_df.loc[common_index].copy()
-    post = post.apply(pd.to_numeric, errors="coerce")
-    post = post.replace([np.inf, -np.inf], np.nan)
-    finite_columns = post.notna().any(axis=0)
+    posterior_positions = posterior_df.index.get_indexer(common_index)
+    feature_columns = list(posterior_df.columns)
+    X = np.empty((len(common_index), len(feature_columns)), dtype=np.float32)
+    finite_columns = np.zeros(len(feature_columns), dtype=bool)
+    for column_number in range(len(feature_columns)):
+        values = pd.to_numeric(
+            posterior_df.iloc[posterior_positions, column_number], errors="coerce"
+        )
+        X[:, column_number] = values.to_numpy(dtype=np.float32, na_value=np.nan)
+        finite_columns[column_number] = np.isfinite(X[:, column_number]).any()
+
     if not finite_columns.any():
         raise ValueError("posterior_df contains no usable numeric cell-type columns.")
-    post = post.loc[:, finite_columns]
-    if not post.fillna(0.0).ne(0).to_numpy().any():
+    np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    usable_columns = finite_columns.copy()
+    for column_number in np.flatnonzero(finite_columns):
+        usable_columns[column_number] = np.any(X[:, column_number] != 0)
+    if not usable_columns.any():
         raise ValueError(
             "posterior_df contains only zero values after alignment and numeric "
             "conversion."
         )
-    usable_columns = post.fillna(0.0).ne(0).any(axis=0)
-    post = post.loc[:, usable_columns].fillna(0.0)
-    if np.isclose(post.sum(axis=1).to_numpy(dtype=float), 0.0).all():
+    if not usable_columns.all():
+        X = X[:, usable_columns]
+        feature_columns = [
+            column
+            for column, usable in zip(feature_columns, usable_columns)
+            if usable
+        ]
+    if np.isclose(X.sum(axis=1), 0.0).all():
         raise ValueError(
             "posterior_df contains only zero values after alignment and numeric "
             "conversion."
         )
-    X = post.to_numpy(dtype=float)
     n_spots = X.shape[0]
+    _log(
+        f"Posterior matrix {X.shape}, dtype={X.dtype}, "
+        f"approximately {X.nbytes / (1024 ** 2):.1f} MiB"
+    )
 
     sample_labels = None
     if sample_column is not None:
@@ -320,11 +428,14 @@ def detect_spatial_niches_from_posteriors(
     # -------------------------
     coords = None
     if hasattr(table, "obsm") and hasattr(table.obsm, "keys") and "spatial" in table.obsm.keys():
-        idx_pos = table.obs.index.get_indexer(common_index)
-        coords = table.obsm["spatial"][idx_pos, :]
+        if len(common_index) == len(table.obs) and common_index.equals(table.obs.index):
+            coords = table.obsm["spatial"]
+        else:
+            idx_pos = table.obs.index.get_indexer(common_index)
+            coords = table.obsm["spatial"][idx_pos, :]
     else:
         if {"x", "y"}.issubset(table.obs.columns):
-            coords = table.obs.loc[common_index, ["x", "y"]].to_numpy()
+            coords = table.obs.loc[common_index, ["x", "y"]].to_numpy(copy=False)
 
     if coords is None:
         raise ValueError(
@@ -337,28 +448,29 @@ def detect_spatial_niches_from_posteriors(
     # -------------------------
     effective_neighbors_by_sample = None
     if smooth and n_neighbors > 1 and n_spots > 1:
+        _log("Spatial smoothing started")
         X_smooth, effective_neighbors_by_sample = _smooth_spatial_compositions(
             X,
             coords,
             n_neighbors,
             sample_labels=sample_labels,
+            chunk_size=int(smoothing_chunk_size),
         )
+        _log("Spatial smoothing completed")
     else:
         X_smooth = X
         if sample_labels is not None:
             effective_neighbors_by_sample = {
                 sample: 1 for sample in pd.unique(sample_labels)
             }
-
-    smoothed_posteriors = pd.DataFrame(
-        X_smooth, index=common_index, columns=post.columns
-    )
+        _log("Spatial smoothing skipped")
 
     if sample_labels is None:
-        fit_positions = np.arange(n_spots)
+        fit_positions = None
         sample_counts = None
         fit_counts_by_sample = None
         n_samples = 1
+        fit_uses_all_locations = True
     else:
         fit_positions, sample_counts, fit_counts_by_sample = (
             _select_niche_fit_positions(
@@ -369,9 +481,19 @@ def detect_spatial_niches_from_posteriors(
             )
         )
         n_samples = len(sample_counts)
+        fit_uses_all_locations = not balance_samples and max_fit_per_sample is None
 
-    X_fit = smoothed_posteriors.iloc[fit_positions]
+    X_fit = X_smooth if fit_uses_all_locations else X_smooth[fit_positions]
     n_fit = len(X_fit)
+    selected_clustering_method = (
+        "minibatch"
+        if clustering_method == "auto" and n_fit >= 50_000
+        else "kmeans"
+        if clustering_method == "auto"
+        else clustering_method
+    )
+    _log(f"Fitting subset contains {n_fit:,} of {n_spots:,} locations")
+    _log(f"Selected clustering algorithm: {selected_clustering_method}")
     effective_silhouette_sample_size = (
         None
         if silhouette_sample_size is None
@@ -395,7 +517,13 @@ def detect_spatial_niches_from_posteriors(
         "n_neighbors": n_neighbors,
         "effective_neighbors_by_sample": effective_neighbors_by_sample,
         "silhouette_sample_size": effective_silhouette_sample_size,
-        "feature_columns": list(smoothed_posteriors.columns),
+        "feature_columns": list(feature_columns),
+        "clustering_method": clustering_method,
+        "selected_clustering_method": selected_clustering_method,
+        "smoothing_chunk_size": int(smoothing_chunk_size),
+        "prediction_chunk_size": int(prediction_chunk_size),
+        "matrix_dtype": str(X_smooth.dtype),
+        "matrix_memory_mb": float(X_smooth.nbytes / (1024 ** 2)),
     }
 
     # -------------------------
@@ -422,32 +550,25 @@ def detect_spatial_niches_from_posteriors(
             for k in range(n_niches_min, n_niches_max + 1)
             if 1 < k <= n_fit
         ]
-        candidate_models = {}
+        if not ks:
+            ks = [max(1, min(n_niches, n_fit))]
         inertia_list = []
         sil_list = []
+        _log(f"Automatic niche selection fitting {len(ks)} candidate model(s)")
         for k in ks:
-            model_k = KMeans(
-                n_clusters=k,
-                random_state=random_state,
-                n_init="auto",
+            model_k = _make_niche_model(
+                selected_clustering_method, k, random_state
             ).fit(X_fit)
-            candidate_models[k] = model_k
             inertia_list.append(float(model_k.inertia_))
-            sil_list.append(_silhouette(model_k.labels_, k))
+            sil_list.append(
+                _silhouette(model_k.labels_, k)
+                if selection_metric == "silhouette"
+                else np.nan
+            )
+            del model_k
 
-        if not ks:
-            chosen_k = max(1, min(n_niches, n_fit))
-            kmeans = KMeans(
-                n_clusters=chosen_k,
-                random_state=random_state,
-                n_init="auto",
-            ).fit(X_fit)
-            ks = [chosen_k]
-            inertia_list = [float(kmeans.inertia_)]
-            sil_list = [_silhouette(kmeans.labels_, chosen_k)]
-        elif selection_metric == "inertia":
+        if selection_metric == "inertia":
             chosen_k = _select_inertia_elbow(ks, inertia_list)
-            kmeans = candidate_models[chosen_k]
         else:
             finite_scores = [
                 (score, k) for k, score in zip(ks, sil_list) if np.isfinite(score)
@@ -456,13 +577,6 @@ def detect_spatial_niches_from_posteriors(
                 chosen_k = max(finite_scores, key=lambda item: item[0])[1]
             else:
                 chosen_k = max(1, min(n_niches, n_fit))
-            kmeans = candidate_models.get(chosen_k)
-            if kmeans is None:
-                kmeans = KMeans(
-                    n_clusters=chosen_k,
-                    random_state=random_state,
-                    n_init="auto",
-                ).fit(X_fit)
 
         diagnostics["candidate_k"] = ks
         diagnostics["inertia"] = inertia_list
@@ -470,23 +584,33 @@ def detect_spatial_niches_from_posteriors(
         diagnostics["chosen_k"] = chosen_k
     else:
         chosen_k = max(1, min(n_niches, n_fit))
-        kmeans = KMeans(
-            n_clusters=chosen_k,
-            random_state=random_state,
-            n_init="auto",
-        ).fit(X_fit)
-        sil = _silhouette(kmeans.labels_, chosen_k) if return_diagnostics else np.nan
-
         diagnostics["candidate_k"] = [chosen_k]
-        diagnostics["inertia"] = [float(kmeans.inertia_)]
-        diagnostics["silhouette"] = [sil]
+        diagnostics["silhouette"] = [np.nan]
         diagnostics["chosen_k"] = chosen_k
 
-    labels = kmeans.predict(smoothed_posteriors)
+    _log("Final model fitting started")
+    kmeans = _make_niche_model(
+        selected_clustering_method, chosen_k, random_state
+    ).fit(X_fit)
+    _log("Final model fitting completed")
+    if not auto_n_niches:
+        diagnostics["inertia"] = [float(kmeans.inertia_)]
+
+    _log("Full-data prediction started")
+    labels = _predict_in_chunks(kmeans, X_smooth, int(prediction_chunk_size))
+    kmeans.feature_names_in_ = np.asarray(feature_columns, dtype=object)
+    _log("Full-data prediction completed")
 
     # -------------------------
     # 6) Wrap labels in DataFrame (categorical)
     # -------------------------
+    _log("Constructing output DataFrames")
+    smoothed_posteriors = pd.DataFrame(
+        X_smooth,
+        index=common_index,
+        columns=feature_columns,
+        copy=False,
+    )
     niches = pd.DataFrame(
         {niches_column: pd.Categorical(labels)},
         index=common_index,
@@ -497,15 +621,9 @@ def detect_spatial_niches_from_posteriors(
     # 7) Write to obs (optional)
     # -------------------------
     if add_to_obs:
-        table.obs.drop(columns=niches.columns, inplace=True, errors="ignore")
-        table.obs = pd.merge(
-            table.obs,
-            niches,
-            left_index=True,
-            right_index=True,
-            how="left",
-            sort=False,
-        )
+        table.obs[niches_column] = niches[niches_column].reindex(table.obs.index)
+
+    diagnostics["peak_memory_mb"] = _peak_memory_mb()
 
     if return_diagnostics and return_model:
         return niches, smoothed_posteriors, diagnostics, kmeans
