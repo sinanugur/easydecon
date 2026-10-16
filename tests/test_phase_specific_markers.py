@@ -310,6 +310,16 @@ def test_shared_with_roles_excludes_negative_from_phase1():
     assert "negative" not in set(phase1["marker_role"])
 
 
+def test_phase_marker_tables_accept_group_as_multiindex_level_and_column():
+    markers = _manual_role_markers().assign(batch="batch_1")
+    markers = markers.set_index(["group", "batch"], drop=False)
+
+    phase1, phase2, _ = resolve_phase_marker_tables(markers)
+
+    assert not phase1.empty
+    assert not phase2.empty
+
+
 def test_shared_ucell_includes_negative_in_phase2():
     _, phase2, _ = resolve_phase_marker_tables(_manual_role_markers(), method="ucell")
 

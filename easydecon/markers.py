@@ -2320,7 +2320,7 @@ def resolve_phase_marker_tables(
         )
 
     work = markers_df.copy()
-    if work.index.name is not None and work.index.name in work.columns:
+    if any(name in work.columns for name in work.index.names if name is not None):
         work = work.reset_index(drop=True)
     roles, role_column = normalize_marker_roles(
         work,

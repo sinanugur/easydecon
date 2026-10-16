@@ -210,7 +210,7 @@ def standardize_marker_dataframe(
         raise TypeError("df must be a pandas DataFrame.")
 
     result = df.copy() if copy else df
-    if result.index.name is not None and result.index.name in result.columns:
+    if any(name in result.columns for name in result.index.names if name is not None):
         result = result.reset_index(drop=True)
     resolved = resolve_marker_columns(result, schema=schema)
     available = ", ".join(map(str, result.columns))
