@@ -82,6 +82,42 @@ Niches
 
 .. autofunction:: plot_niche_compositions
 
+Bulk signatures
+---------------
+
+.. autofunction:: prepare_bulk_signature
+
+.. autofunction:: map_bulk_signature
+
+.. autofunction:: plot_bulk_signature
+
+.. autoclass:: PreparedBulkSignature
+   :members:
+
+.. autoclass:: BulkSignatureResult
+   :members:
+
+Bulk-to-niche analysis
+----------------------
+
+.. autofunction:: analyze_bulk_niches
+
+.. autofunction:: analyze_niche_interface
+
+.. autofunction:: plot_niche_bulk_associations
+
+.. autofunction:: plot_niche_supporting_program
+
+.. autofunction:: plot_bulk_niche_evidence
+
+.. autofunction:: plot_niche_interface
+
+.. autoclass:: BulkNicheResult
+   :members:
+
+.. autoclass:: NicheInterfaceResult
+   :members:
+
 Schema helpers
 --------------
 

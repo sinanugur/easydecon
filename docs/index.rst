@@ -54,6 +54,8 @@ Start here
    refinement
    candidate_pruning
    niches
+   bulk_signatures
+   bulk_niches
    visualization
 
 .. toctree::

@@ -17,6 +17,13 @@ def test_package_imports_public_api():
     assert "positive" in ed.UCELL_MARKER_ROLES
     assert hasattr(ed, "MARKER_ROLE_MODES")
     assert "phase_specific" in ed.MARKER_ROLE_MODES
+    assert hasattr(ed, "prepare_bulk_signature")
+    assert hasattr(ed, "map_bulk_signature")
+    assert hasattr(ed, "plot_bulk_signature")
+    assert hasattr(ed, "BulkSignatureResult")
+    assert hasattr(ed, "analyze_bulk_niches")
+    assert hasattr(ed, "analyze_niche_interface")
+    assert hasattr(ed, "BulkNicheResult")
 
 
 def test_run_easydecon_alias():
@@ -40,5 +47,12 @@ def test_all_contains_public_names():
         "refine_group",
         "UCELL_MARKER_ROLES",
         "MARKER_ROLE_MODES",
+        "prepare_bulk_signature",
+        "map_bulk_signature",
+        "plot_bulk_signature",
+        "BulkSignatureResult",
+        "analyze_bulk_niches",
+        "analyze_niche_interface",
+        "BulkNicheResult",
     ]:
         assert name in ed.__all__

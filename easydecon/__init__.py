@@ -9,6 +9,23 @@ from ._schema import (
 )
 from ._validation import MARKER_ROLE_MODES, UCELL_MARKER_ROLES
 from .config import set_batch_size, set_n_jobs
+from .bulk import (
+    BulkSignatureResult,
+    PreparedBulkSignature,
+    map_bulk_signature,
+    plot_bulk_signature,
+    prepare_bulk_signature,
+)
+from .bulk_niche import (
+    BulkNicheResult,
+    NicheInterfaceResult,
+    analyze_bulk_niches,
+    analyze_niche_interface,
+    plot_bulk_niche_evidence,
+    plot_niche_bulk_associations,
+    plot_niche_interface,
+    plot_niche_supporting_program,
+)
 from .diagnostics import summarize_easydecon_result, summarize_marker_table
 from .easydecon import (
     assign_clusters_from_df,
@@ -66,4 +83,17 @@ __all__ = [
     "refine_group",
     "UCELL_MARKER_ROLES",
     "MARKER_ROLE_MODES",
+    "PreparedBulkSignature",
+    "BulkSignatureResult",
+    "prepare_bulk_signature",
+    "map_bulk_signature",
+    "plot_bulk_signature",
+    "BulkNicheResult",
+    "NicheInterfaceResult",
+    "analyze_bulk_niches",
+    "analyze_niche_interface",
+    "plot_niche_bulk_associations",
+    "plot_niche_supporting_program",
+    "plot_bulk_niche_evidence",
+    "plot_niche_interface",
 ]
