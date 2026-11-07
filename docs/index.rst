@@ -55,6 +55,7 @@ Start here
    candidate_pruning
    niches
    bulk_signatures
+   bulk_islands
    bulk_niches
    visualization
 

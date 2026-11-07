@@ -24,6 +24,9 @@ def test_package_imports_public_api():
     assert hasattr(ed, "analyze_bulk_niches")
     assert hasattr(ed, "analyze_niche_interface")
     assert hasattr(ed, "BulkNicheResult")
+    assert hasattr(ed, "BulkIslandResult")
+    assert hasattr(ed, "detect_bulk_islands")
+    assert hasattr(ed, "plot_bulk_islands")
 
 
 def test_run_easydecon_alias():
@@ -54,5 +57,8 @@ def test_all_contains_public_names():
         "analyze_bulk_niches",
         "analyze_niche_interface",
         "BulkNicheResult",
+        "BulkIslandResult",
+        "detect_bulk_islands",
+        "plot_bulk_islands",
     ]:
         assert name in ed.__all__

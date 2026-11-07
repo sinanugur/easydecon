@@ -97,6 +97,16 @@ Bulk signatures
 .. autoclass:: BulkSignatureResult
    :members:
 
+Bulk-program islands
+--------------------
+
+.. autofunction:: detect_bulk_islands
+
+.. autofunction:: plot_bulk_islands
+
+.. autoclass:: BulkIslandResult
+   :members:
+
 Bulk-to-niche analysis
 ----------------------
 

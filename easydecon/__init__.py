@@ -26,6 +26,11 @@ from .bulk_niche import (
     plot_niche_interface,
     plot_niche_supporting_program,
 )
+from .bulk_islands import (
+    BulkIslandResult,
+    detect_bulk_islands,
+    plot_bulk_islands,
+)
 from .diagnostics import summarize_easydecon_result, summarize_marker_table
 from .easydecon import (
     assign_clusters_from_df,
@@ -96,4 +101,7 @@ __all__ = [
     "plot_niche_supporting_program",
     "plot_bulk_niche_evidence",
     "plot_niche_interface",
+    "BulkIslandResult",
+    "detect_bulk_islands",
+    "plot_bulk_islands",
 ]
